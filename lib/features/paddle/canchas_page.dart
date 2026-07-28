@@ -189,7 +189,8 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
 
     try {
       await http.post(
-        Uri.parse('http://localhost:3000/send-whatsapp'),
+        // ✅ Corrección a aplicar:
+        Uri.parse('https://servicio-whatsapp-oqua.onrender.com/send-whatsapp'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'phone': telefonoLimpio, 'message': mensaje}),
       );

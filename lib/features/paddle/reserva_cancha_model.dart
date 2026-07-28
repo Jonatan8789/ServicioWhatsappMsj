@@ -2,14 +2,14 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 class ReservaCanchaModel {
   final String id;
-  final String cancha; // Ej: "Cancha 1", "Cancha 2"
-  final String nombreCliente; // Nombre o responsable del turno
-  final String? socioId; // ID del socio si corresponde (null si es externo)
-  final DateTime fecha; // Día del turno
-  final int horaInicio; // Ej: 18
-  final int duracionHoras; // Ej: 2 (de 18:00 a 20:00)
+  final String cancha;
+  final String nombreCliente;
+  final String? socioId;
+  final DateTime fecha;
+  final int horaInicio;
+  final int duracionHoras;
   final double precio;
-  final String metodoPago; // 'Efectivo', 'Mercado Pago', 'Cuenta Corriente'
+  final String metodoPago;
 
   ReservaCanchaModel({
     required this.id,
