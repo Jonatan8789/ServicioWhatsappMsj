@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1033148419273",
+    "project_id": "oqua-235c1",
+    "storage_bucket": "oqua-235c1.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1033148419273:android:1af25f48b8449352771118",
+        "android_client_info": {
+          "package_name": "com.example.natatorio_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDBUSyxjqAneqRIX9txo_9MWQIA9h6PEaY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
