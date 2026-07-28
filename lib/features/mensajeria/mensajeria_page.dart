@@ -22,7 +22,7 @@ class _MensajeriaPageState extends State<MensajeriaPage> {
   final TextEditingController _busquedaSocioController =
       TextEditingController();
 
-  final String _backendUrl = 'http://localhost:3000';
+  final String baseUrl = 'https://servicio-whatsapp-oqua.onrender.com';
 
   String _filtroDestino = 'TODOS';
   String _canalSeleccionado = 'INTERNO';
@@ -639,7 +639,7 @@ class _MensajeriaPageState extends State<MensajeriaPage> {
       }
 
       final response = await http.post(
-        Uri.parse('$_backendUrl/send-whatsapp'),
+        Uri.parse('$baseUrl/send-whatsapp'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'phone': limpio, 'message': mensaje}),
       );
@@ -659,7 +659,7 @@ class _MensajeriaPageState extends State<MensajeriaPage> {
   ) async {
     try {
       await http.post(
-        Uri.parse('$_backendUrl/notificar-email'),
+        Uri.parse('$baseUrl/notificar-email'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'email': email,
