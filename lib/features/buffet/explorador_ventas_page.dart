@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:printing/printing.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
 
 class ExploradorVentasPage extends StatefulWidget {
   const ExploradorVentasPage({Key? key}) : super(key: key);
@@ -17,6 +20,7 @@ class _ExploradorVentasPageState extends State<ExploradorVentasPage> {
   // 🧾 REIMPRESIÓN / VISUALIZACIÓN DE TICKET FISCAL
   // =========================================================================
   void _mostrarTicketFiscalDialog(Map<String, dynamic> venta) {
+    final bool esFiscal = venta['cae'] != null && venta['cae'] != 'NO_FISCAL_X';
     final int tipoComp = venta['tipoComprobanteLegal'] ?? 11;
     String tipoLetra = 'C';
     if (tipoComp == 1) tipoLetra = 'A';
@@ -25,11 +29,19 @@ class _ExploradorVentasPageState extends State<ExploradorVentasPage> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Row(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
           children: [
-            Icon(Icons.receipt_long, color: Colors.indigo),
-            SizedBox(width: 8),
-            Text('Comprobante Fiscal ARCA'),
+            Icon(
+              Icons.receipt_long,
+              color: esFiscal ? Colors.indigo : Colors.amber.shade900,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              esFiscal
+                  ? 'Comprobante Fiscal ARCA'
+                  : 'Comprobante X (No Fiscal)',
+            ),
           ],
         ),
         content: SizedBox(
@@ -49,7 +61,7 @@ class _ExploradorVentasPageState extends State<ExploradorVentasPage> {
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(
-                    'FACTURA $tipoLetra',
+                    esFiscal ? 'FACTURA $tipoLetra' : 'TICKET X',
                     style: const TextStyle(
                       fontSize: 22,
                       fontWeight: FontWeight.bold,
@@ -59,13 +71,13 @@ class _ExploradorVentasPageState extends State<ExploradorVentasPage> {
               ),
               const Divider(height: 24),
               Text(
-                'N° Comprobante: ${venta['puntoVentaLegal']?.toString().padLeft(4, '0') ?? '0001'}-${venta['nroFacturaLegal']?.toString().padLeft(8, '0') ?? '00000000'}',
+                'N° Comprobante: ${esFiscal ? "${venta['puntoVentaLegal']?.toString().padLeft(4, '0') ?? '0001'}-${venta['nroFacturaLegal']?.toString().padLeft(8, '0') ?? '00000000'}" : "X-00000000"}',
               ),
               Text(
                 'Fecha: ${venta['fecha'] != null ? (venta['fecha'] as Timestamp).toDate().toString().substring(0, 16) : ''}',
               ),
               if (venta['socio_id'] != null)
-                Text('Cliente / ID: ${venta['socio_id']}'),
+                Text('Cliente / DNI: ${venta['socio_id']}'),
               const Divider(),
               Text(
                 'Monto Total: \$${(venta['total'] as num?)?.toStringAsFixed(2) ?? '0.00'} ARS',
@@ -78,24 +90,33 @@ class _ExploradorVentasPageState extends State<ExploradorVentasPage> {
               Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: Colors.grey.shade100,
+                  color: esFiscal ? Colors.grey.shade100 : Colors.amber.shade50,
                   borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: Colors.grey.shade300),
+                  border: Border.all(
+                    color: esFiscal
+                        ? Colors.grey.shade300
+                        : Colors.amber.shade300,
+                  ),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'CAE: ${venta['cae'] ?? 'N/A'}',
+                      esFiscal
+                          ? 'CAE: ${venta['cae'] ?? 'N/A'}'
+                          : 'DOCUMENTO NO FISCAL',
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
-                    Text(
-                      'Vencimiento CAE: ${venta['vencimientoCae'] ?? 'N/A'}',
-                    ),
+                    if (esFiscal)
+                      Text(
+                        'Vencimiento CAE: ${venta['vencimientoCae'] ?? 'N/A'}',
+                      ),
                     const SizedBox(height: 6),
-                    const Text(
-                      'Comprobante Autorizado Electrónicamente por ARCA',
-                      style: TextStyle(fontSize: 10, color: Colors.grey),
+                    Text(
+                      esFiscal
+                          ? 'Comprobante Autorizado Electrónicamente por ARCA'
+                          : 'Documento de Control Interno sin Validez Fiscal',
+                      style: const TextStyle(fontSize: 10, color: Colors.grey),
                     ),
                   ],
                 ),
@@ -108,8 +129,77 @@ class _ExploradorVentasPageState extends State<ExploradorVentasPage> {
             onPressed: () => Navigator.pop(ctx),
             child: const Text('Cerrar'),
           ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF0F172A),
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => _generarEImprimirPdfTicket(venta),
+            icon: const Icon(Icons.print, size: 18),
+            label: const Text('Imprimir / PDF'),
+          ),
         ],
       ),
+    );
+  }
+
+  // 🖨️ Función para generar el ticket nativo e invocar el diálogo de impresión
+  Future<void> _generarEImprimirPdfTicket(Map<String, dynamic> venta) async {
+    final pdf = pw.Document();
+    final bool esFiscal = venta['cae'] != null && venta['cae'] != 'NO_FISCAL_X';
+
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.roll80, // Formato estándar de ticketera 80mm
+        build: (pw.Context context) {
+          return pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.center,
+            children: [
+              pw.Text(
+                'OQUA CLUB DEPORTIVO',
+                style: pw.TextStyle(
+                  fontWeight: pw.FontWeight.bold,
+                  fontSize: 14,
+                ),
+              ),
+              pw.SizedBox(height: 4),
+              pw.Text(
+                esFiscal ? 'COMPROBANTE FISCAL' : 'TICKET X - NO FISCAL',
+                style: pw.TextStyle(fontSize: 10),
+              ),
+              pw.Divider(),
+              pw.Text(
+                'Monto Total: \$${(venta['total'] as num?)?.toStringAsFixed(2) ?? '0.00'} ARS',
+                style: pw.TextStyle(
+                  fontWeight: pw.FontWeight.bold,
+                  fontSize: 12,
+                ),
+              ),
+              pw.SizedBox(height: 8),
+              pw.Text(
+                'Fecha: ${venta['fecha'] != null ? (venta['fecha'] as Timestamp).toDate().toString().substring(0, 16) : ''}',
+                style: const pw.TextStyle(fontSize: 9),
+              ),
+              if (venta['socio_id'] != null)
+                pw.Text(
+                  'DNI/Cliente: ${venta['socio_id']}',
+                  style: const pw.TextStyle(fontSize: 9),
+                ),
+              pw.Divider(),
+              pw.Text(
+                esFiscal
+                    ? 'CAE: ${venta['cae'] ?? ''}'
+                    : 'DOCUMENTO DE CONTROL INTERNO',
+                style: pw.TextStyle(fontSize: 8),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    await Printing.layoutPdf(
+      onLayout: (PdfPageFormat format) async => pdf.save(),
     );
   }
 

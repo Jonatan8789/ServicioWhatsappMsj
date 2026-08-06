@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'package:natatorio_app/features/admin/proveedores_compras_page.dart';
 import 'package:natatorio_app/features/admin/reportes_bi_page.dart';
@@ -28,6 +29,8 @@ import 'package:natatorio_app/features/paddle/configuracion_paddle_page.dart';
 import '../buffet/pos_caja_page.dart';
 import '../buffet/monitor_cocina_page.dart';
 import '../buffet/menu_buffet_page.dart';
+import 'package:natatorio_app/features/paddle/crear_torneo_page.dart';
+import 'package:natatorio_app/features/paddle/detalle_torneo_page.dart';
 
 class DashboardPage extends StatefulWidget {
   final String rolUsuario;
@@ -40,6 +43,7 @@ class DashboardPage extends StatefulWidget {
 
 class _DashboardPageState extends State<DashboardPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final User? _userActual = FirebaseAuth.instance.currentUser;
   late Widget _pantallaActual;
 
   @override
@@ -59,13 +63,33 @@ class _DashboardPageState extends State<DashboardPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              '¡Bienvenido de nuevo, ${widget.rolUsuario == 'admin' ? 'Administrador' : 'Usuario'}!',
-              style: const TextStyle(
-                fontSize: 32,
-                fontWeight: FontWeight.w900,
-                color: Color(0xFF0F172A),
-              ),
+            // 👤 SALUDO DINÁMICO RECONOCIENDO AL SOCIO EN EL PADRÓN
+            StreamBuilder<QuerySnapshot>(
+              stream: _firestore
+                  .collection('socios')
+                  .where('usuarioUid', isEqualTo: _userActual?.uid ?? '')
+                  .limit(1)
+                  .snapshots(),
+              builder: (context, snapshot) {
+                String nombreMostrar = widget.rolUsuario == 'admin'
+                    ? 'Administrador'
+                    : 'Socio';
+
+                if (snapshot.hasData && snapshot.data!.docs.isNotEmpty) {
+                  final dataSocio =
+                      snapshot.data!.docs.first.data() as Map<String, dynamic>;
+                  nombreMostrar = dataSocio['nombre'] ?? nombreMostrar;
+                }
+
+                return Text(
+                  '¡Bienvenido de nuevo, $nombreMostrar!',
+                  style: const TextStyle(
+                    fontSize: 32,
+                    fontWeight: FontWeight.w900,
+                    color: Color(0xFF0F172A),
+                  ),
+                );
+              },
             ),
             Text(
               'Estado operativo del club para hoy (${ahora.day}/${ahora.month}/${ahora.year}).',
@@ -551,6 +575,175 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
+  // 🏆 VISTA DEL MÓDULO DE TORNEOS DE PÁDEL
+  Widget _construirVistaTorneos() {
+    return Padding(
+      padding: const EdgeInsets.all(32.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Torneos de Pádel',
+                style: TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF0F172A),
+                ),
+              ),
+              if (widget.rolUsuario == 'admin')
+                Row(
+                  children: [
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF0A3B43),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 16,
+                        ),
+                        side: const BorderSide(color: Color(0xFF0A3B43)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                      onPressed: () async {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                              'Sincronizando categorías con Padel Manager...',
+                            ),
+                          ),
+                        );
+
+                        final res = await AuthService()
+                            .forzarSincronizacionRanking();
+
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(res['mensaje']),
+                              backgroundColor: res['exito']
+                                  ? const Color(0xFF0A3B43)
+                                  : Colors.redAccent,
+                            ),
+                          );
+                        }
+                      },
+                      icon: const Icon(Icons.sync_rounded),
+                      label: const Text(
+                        'Sincronizar Ranking',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF0A3B43),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 16,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const CrearTorneoPage(),
+                        ),
+                      ),
+                      icon: const Icon(Icons.add),
+                      label: const Text(
+                        'Crear Nuevo Torneo',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot>(
+              stream: _firestore.collection('torneos').snapshots(),
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                final docs = snapshot.data!.docs;
+                if (docs.isEmpty) {
+                  return const Center(
+                    child: Text(
+                      'No hay torneos registrados actualmente.',
+                      style: TextStyle(color: Colors.grey, fontSize: 16),
+                    ),
+                  );
+                }
+
+                return ListView.builder(
+                  itemCount: docs.length,
+                  itemBuilder: (context, index) {
+                    final tData = docs[index].data() as Map<String, dynamic>;
+                    final String tId = docs[index].id;
+
+                    return Card(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 1.5,
+                      child: ListTile(
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 8,
+                        ),
+                        leading: const Icon(
+                          Icons.emoji_events,
+                          color: Colors.amber,
+                          size: 36,
+                        ),
+                        title: Text(
+                          tData['nombre'] ?? 'Torneo de Pádel',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                        subtitle: Text(
+                          'Categoría: ${tData['categoria']} | Rama: ${tData['rama']} | Estado: ${tData['estado']}',
+                          style: const TextStyle(color: Color(0xFF64748B)),
+                        ),
+                        trailing: const Icon(
+                          Icons.arrow_forward_ios,
+                          size: 16,
+                          color: Colors.grey,
+                        ),
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => DetalleTorneoPage(
+                              torneoId: tId,
+                              esAdmin: widget.rolUsuario == 'admin',
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _mostrarSociosPage() {
     setState(() {
       _pantallaActual = SociosPage(
@@ -651,6 +844,13 @@ class _DashboardPageState extends State<DashboardPage> {
                           'Canchas & Turnos',
                           onTap: () => setState(
                             () => _pantallaActual = const CanchasPage(),
+                          ),
+                        ),
+                        _buildMenuItem(
+                          Icons.emoji_events_rounded,
+                          'Torneos de Pádel',
+                          onTap: () => setState(
+                            () => _pantallaActual = _construirVistaTorneos(),
                           ),
                         ),
                         _buildMenuItem(

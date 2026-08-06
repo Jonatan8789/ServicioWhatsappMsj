@@ -12,7 +12,20 @@
           "package_name": "com.example.natatorio_app"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "1033148419273-ht15oeoqc4tl5givtls212164biushpp.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.natatorio_app",
+            "certificate_hash": "289bbc94fa5bf6dad23552fa917c14f34f8228d4"
+          }
+        },
+        {
+          "client_id": "1033148419273-aphdb5n7eiugludb44m3r3ggcktol0uv.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyDBUSyxjqAneqRIX9txo_9MWQIA9h6PEaY"
@@ -20,7 +33,19 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1033148419273-aphdb5n7eiugludb44m3r3ggcktol0uv.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "1033148419273-uraue5albsoh89rue0h0q2idfo6o4fsj.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.natatorioApp"
+              }
+            }
+          ]
         }
       }
     }

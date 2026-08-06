@@ -24,6 +24,170 @@ class _LoginPageState extends State<LoginPage> {
     ).showSnackBar(SnackBar(content: Text(mensaje), backgroundColor: color));
   }
 
+  // 🪟 DIÁLOGO MODAL PARA VINCULAR DNI DEL SOCIO
+  Future<bool> _solicitarVinculacionDni(String uid) async {
+    final TextEditingController dniController = TextEditingController();
+    bool vinculando = false;
+    bool resultadoExitoso = false;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            const Color oquaPrimary = Color(0xFF0A3B43);
+
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
+              ),
+              title: const Row(
+                children: [
+                  Icon(Icons.badge_outlined, color: oquaPrimary),
+                  SizedBox(width: 10),
+                  Text('Vinculación de Socio'),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Ingresa tu DNI para vincular tu cuenta con tu ficha en el padrón del club:',
+                    style: TextStyle(fontSize: 13, color: Colors.black54),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: dniController,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      labelText: 'Número de DNI',
+                      hintText: 'Ej: 38123456',
+                      prefixIcon: const Icon(Icons.pin, color: oquaPrimary),
+                      filled: true,
+                      fillColor: const Color(0xFFF8FAFC),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: vinculando
+                      ? null
+                      : () {
+                          Navigator.pop(dialogContext);
+                        },
+                  child: const Text('Cancelar', style: TextStyle(color: Colors.grey)),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: oquaPrimary,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  onPressed: vinculando
+                      ? null
+                      : () async {
+                          final dni = dniController.text.trim();
+                          if (dni.isEmpty) {
+                            _mostrarMensaje(
+                              'Ingresa un DNI válido.',
+                              Colors.orange,
+                            );
+                            return;
+                          }
+
+                          setDialogState(() => vinculando = true);
+                          final resp = await AuthService().vincularSocioPorDni(
+                            dni,
+                          );
+                          setDialogState(() => vinculando = false);
+
+                          if (resp['exito'] == true) {
+                            resultadoExitoso = true;
+                            if (dialogContext.mounted) {
+                              Navigator.pop(dialogContext);
+                            }
+                          } else {
+                            _mostrarMensaje(
+                              resp['mensaje'] ?? 'Error al vincular.',
+                              Colors.redAccent,
+                            );
+                          }
+                        },
+                  child: vinculando
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            color: Colors.white,
+                            strokeWidth: 2,
+                          ),
+                        )
+                      : const Text('Vincular'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    return resultadoExitoso;
+  }
+
+  // 🔄 FLUJO COMPLETO POST-AUTENTICACIÓN
+  Future<void> _procesarPostLogin(User user, Color colorTema) async {
+    String rol = await AuthService().obtenerRolUsuario(user.uid);
+
+    if (rol == 'bloqueado') {
+      setState(() => _cargando = false);
+      await AuthService().cerrarSesion();
+      _mostrarMensaje(
+        'Tu cuenta ha sido deshabilitada por la administración.',
+        Colors.redAccent,
+      );
+      return;
+    }
+
+    // Si es un socio (no admin), verificar que esté en el padrón por DNI
+    if (rol == 'socio') {
+      bool yaVinculado = await AuthService().estaUsuarioVinculado(user.uid);
+
+      if (!yaVinculado) {
+        setState(() => _cargando = false);
+        bool vinculadoOk = await _solicitarVinculacionDni(user.uid);
+
+        if (!vinculadoOk) {
+          await AuthService().cerrarSesion();
+          _mostrarMensaje(
+            'Debes estar registrado en el padrón de socios para ingresar.',
+            Colors.orange,
+          );
+          return;
+        }
+      }
+    }
+
+    setState(() => _cargando = false);
+    _mostrarMensaje('¡Bienvenido/a al sistema!', colorTema);
+
+    if (mounted) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => DashboardPage(rolUsuario: rol),
+        ),
+      );
+    }
+  }
+
   Future<void> _procesarFormulario() async {
     final email = _emailController.text.trim();
     final password = _passwordController.text.trim();
@@ -73,30 +237,8 @@ class _LoginPageState extends State<LoginPage> {
       resultado = await AuthService().registrarConEmail(email, password);
     }
 
-    if (resultado != null && resultado.user != null && mounted) {
-      String rol = await AuthService().obtenerRolUsuario(resultado.user!.uid);
-
-      if (rol == 'bloqueado') {
-        setState(() => _cargando = false);
-        await AuthService().cerrarSesion();
-        _mostrarMensaje(
-          'Tu cuenta ha sido deshabilitada por la administración.',
-          Colors.redAccent,
-        );
-        return;
-      }
-
-      setState(() => _cargando = false);
-      _mostrarMensaje('¡Bienvenido/a al sistema!', const Color(0xFF0A3B43));
-
-      if (mounted) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (context) => DashboardPage(rolUsuario: rol),
-          ),
-        );
-      }
+    if (resultado != null && resultado.user != null) {
+      await _procesarPostLogin(resultado.user!, const Color(0xFF0A3B43));
     } else {
       setState(() => _cargando = false);
       _mostrarMensaje('Hubo un error. Verifica tus datos.', Colors.redAccent);
@@ -105,7 +247,6 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   Widget build(BuildContext context) {
-    // 🎨 Color Institucional Principal de OQUA
     const Color oquaPrimary = Color(0xFF0A3B43);
 
     return Scaffold(
@@ -131,7 +272,6 @@ class _LoginPageState extends State<LoginPage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // 🖼️ LOGO INSTITUCIONAL DE OQUA
                 ClipRRect(
                   borderRadius: BorderRadius.circular(16),
                   child: Image.asset(
@@ -171,14 +311,13 @@ class _LoginPageState extends State<LoginPage> {
                   _modoActual == 'login'
                       ? 'Gestión integral de socios y canchas'
                       : _modoActual == 'registro'
-                      ? 'Crea una cuenta administrativa para el club'
+                      ? 'Crea una cuenta para operar en el club'
                       : 'Recupera el acceso a tu cuenta',
                   textAlign: TextAlign.center,
                   style: const TextStyle(color: Colors.grey, fontSize: 13),
                 ),
                 const SizedBox(height: 30),
 
-                // CAMPO EMAIL
                 TextField(
                   controller: _emailController,
                   keyboardType: TextInputType.emailAddress,
@@ -204,7 +343,6 @@ class _LoginPageState extends State<LoginPage> {
                 ),
                 const SizedBox(height: 16),
 
-                // CAMPO CONTRASEÑA
                 if (_modoActual != 'recuperar') ...[
                   TextField(
                     controller: _passwordController,
@@ -251,7 +389,6 @@ class _LoginPageState extends State<LoginPage> {
 
                 const SizedBox(height: 16),
 
-                // BOTÓN PRINCIPAL
                 _cargando
                     ? const CircularProgressIndicator(color: oquaPrimary)
                     : ElevatedButton(
@@ -296,7 +433,6 @@ class _LoginPageState extends State<LoginPage> {
                   ),
                   const SizedBox(height: 20),
 
-                  // BOTÓN GOOGLE
                   ElevatedButton.icon(
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.white,
@@ -326,27 +462,16 @@ class _LoginPageState extends State<LoginPage> {
                       ),
                     ),
                     onPressed: () async {
+                      setState(() => _cargando = true);
                       final resultado = await AuthService()
                           .iniciarSesionConGoogle();
-                      if (resultado != null &&
-                          resultado.user != null &&
-                          mounted) {
-                        String rol = await AuthService().obtenerRolUsuario(
-                          resultado.user!.uid,
-                        );
-                        _mostrarMensaje(
-                          '¡Bienvenido/a, ${resultado.user?.displayName ?? 'Usuario'}!',
+                      if (resultado != null && resultado.user != null) {
+                        await _procesarPostLogin(
+                          resultado.user!,
                           oquaPrimary,
                         );
-                        if (mounted) {
-                          Navigator.pushReplacement(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) =>
-                                  DashboardPage(rolUsuario: rol),
-                            ),
-                          );
-                        }
+                      } else {
+                        setState(() => _cargando = false);
                       }
                     },
                   ),
@@ -354,7 +479,6 @@ class _LoginPageState extends State<LoginPage> {
 
                 const SizedBox(height: 24),
 
-                // CONMUTADOR
                 TextButton(
                   onPressed: () {
                     setState(() {

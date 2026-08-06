@@ -35,7 +35,7 @@ dependencies:
   firebase_core: ^4.10.0
   firebase_auth: ^6.5.2
   cloud_firestore: ^6.5.0
-  google_sign_in: ^7.2.0
+  google_sign_in: ^6.2.1
   firebase_storage: ^13.4.2     # Versión moderna unificada
   file_picker: ^11.0.2          # Versión moderna unificada
   http: ^1.6.0
@@ -48,6 +48,7 @@ dependencies:
   mobile_scanner: ^7.2.0
   cloud_functions: 6.3.2 # O la versión compatible con tu entorno actual
   image_picker: ^1.1.0 # Para seleccionar fotos/PDFs desde Web/Mobile
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
