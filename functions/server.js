@@ -2,25 +2,98 @@ const express = require('express');
 const cors = require('cors');
 const QRCode = require('qrcode');
 const qrcodeTerminal = require('qrcode-terminal');
-const { makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
-const fs = require('fs');
-const path = require('path');
+const { makeWASocket, DisconnectReason, initAuthCreds, BufferJSON } = require('@whiskeysockets/baileys');
+const admin = require('firebase-admin');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+// 1. Inicialización de Firebase Admin en Render
+if (!admin.apps.length) {
+    admin.initializeApp({
+        credential: admin.credential.cert({
+            projectId: process.env.FIREBASE_PROJECT_ID,
+            clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+            privateKey: process.env.FIREBASE_PRIVATE_KEY 
+                ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n') 
+                : undefined,
+        })
+    });
+}
+const db = admin.firestore();
+
 let sock = null;
 let latestQrBase64 = null;
 let isConnected = false;
 
-const AUTH_FOLDER = path.join(__dirname, 'auth_info_baileys');
+// 2. Auth State Persistente en Firestore
+async function useFirestoreAuthState(docId = 'session_credentials') {
+    const docRef = db.collection('whatsapp_session').doc(docId);
+    const doc = await docRef.get();
 
+    let creds;
+    if (doc.exists && doc.data().creds) {
+        creds = JSON.parse(JSON.stringify(doc.data().creds), BufferJSON.reviver);
+    } else {
+        creds = initAuthCreds();
+    }
+
+    return {
+        state: {
+            creds,
+            keys: {
+                get: async (type, ids) => {
+                    const data = {};
+                    await Promise.all(
+                        ids.map(async (id) => {
+                            const itemDoc = await docRef.collection(type).doc(id).get();
+                            if (itemDoc.exists && itemDoc.data().value) {
+                                data[id] = JSON.parse(JSON.stringify(itemDoc.data().value), BufferJSON.reviver);
+                            }
+                        })
+                    );
+                    return data;
+                },
+                set: async (data) => {
+                    const batch = db.batch();
+                    for (const category in data) {
+                        for (const id in data[category]) {
+                            const value = data[category][id];
+                            const itemRef = docRef.collection(category).doc(id);
+                            if (value) {
+                                batch.set(itemRef, { value: JSON.parse(JSON.stringify(value, BufferJSON.replacer)) });
+                            } else {
+                                batch.delete(itemRef);
+                            }
+                        }
+                    }
+                    await batch.commit();
+                }
+            }
+        },
+        saveCreds: async () => {
+            await docRef.set({
+                creds: JSON.parse(JSON.stringify(creds, BufferJSON.replacer)),
+                updatedAt: admin.firestore.FieldValue.serverTimestamp()
+            }, { merge: true });
+        },
+        clearState: async () => {
+            await docRef.delete();
+        }
+    };
+}
+
+// 3. Conexión de WhatsApp usando Firestore
 async function connectToWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
+    const { state, saveCreds, clearState } = await useFirestoreAuthState();
 
     sock = makeWASocket({
         auth: state,
+        printQRInTerminal: false,
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 60000,
+        keepAliveIntervalMs: 10000,
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -38,23 +111,30 @@ async function connectToWhatsApp() {
         }
 
         if (connection === 'open') {
-            console.log('✅ WhatsApp Conectado correctamente');
+            console.log('✅ WhatsApp Conectado correctamente y persistido en Firestore');
             isConnected = true;
             latestQrBase64 = null;
         }
 
         if (connection === 'close') {
             isConnected = false;
-            const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('❌ Conexión cerrada. ¿Reconectar?:', shouldReconnect);
+            const statusCode = (lastDisconnect?.error)?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            console.log('❌ Conexión cerrada. Status:', statusCode, '¿Reconectar?:', shouldReconnect);
+
+            if (statusCode === DisconnectReason.loggedOut) {
+                console.log('🔒 Sesión cerrada explícitamente. Limpiando credenciales en Firestore...');
+                await clearState();
+            }
+
             if (shouldReconnect) {
-                connectToWhatsApp();
+                setTimeout(() => connectToWhatsApp(), 3000);
             }
         }
     });
 }
 
-// 📌 ENDPOINT DE SALUD (Para el ping de UptimeRobot y evitar que Render se duerma)
+// 📌 ENDPOINT DE SALUD (Para el ping de UptimeRobot)
 app.get('/health', (req, res) => {
     res.status(200).send('OK - Backend Baileys Activo');
 });
@@ -73,15 +153,15 @@ app.post('/logout', async (req, res) => {
         if (sock) {
             await sock.logout();
         }
-        if (fs.existsSync(AUTH_FOLDER)) {
-            fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
-        }
+        const { clearState } = await useFirestoreAuthState();
+        await clearState();
+
         isConnected = false;
         latestQrBase64 = null;
         
         setTimeout(() => connectToWhatsApp(), 2000);
 
-        res.json({ success: true, message: 'Sesión cerrada correctamente' });
+        res.json({ success: true, message: 'Sesión desvinculada y limpiada en Firestore correctamente' });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
@@ -94,7 +174,6 @@ app.post('/send-whatsapp', async (req, res) => {
         return res.status(500).json({ success: false, error: 'WhatsApp no está conectado' });
     }
     try {
-        // Limpiamos estrictamente a solo números por seguridad
         const cleanPhone = String(phone).replace(/\D/g, '');
         const jid = `${cleanPhone}@s.whatsapp.net`;
         
@@ -107,7 +186,6 @@ app.post('/send-whatsapp', async (req, res) => {
     }
 });
 
-// Configuración de puerto compatible con Render (process.env.PORT) y entorno local (3000)
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`🚀 Servidor ejecutándose en el puerto ${PORT}`);
