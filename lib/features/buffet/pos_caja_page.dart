@@ -46,6 +46,49 @@ class _PosCajaPageState extends State<PosCajaPage> {
     );
   }
 
+  // 📲 ENVÍO DE COMPROBANTE DE PAGO POR WHATSAPP
+  Future<void> _enviarComprobantePorWhatsApp({
+    required String telefono,
+    required String nombreCliente,
+    required List<Map<String, dynamic>> items,
+    required double total,
+    required String medioPago,
+  }) async {
+    String limpio = telefono.replaceAll(RegExp(r'\D'), '');
+    if (limpio.isEmpty) return;
+
+    final buffer = StringBuffer();
+    buffer.writeln('📄 *COMPROBANTE DE PAGO - OQUA CLUB DEPORTIVO*');
+    buffer.writeln('----------------------------------------');
+    buffer.writeln('👤 *Cliente:* $nombreCliente');
+    buffer.writeln('💳 *Medio de Pago:* $medioPago');
+    buffer.writeln(
+      '📅 *Fecha:* ${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}',
+    );
+    buffer.writeln('----------------------------------------');
+    buffer.writeln('*Detalle de Operación:*');
+
+    for (var item in items) {
+      buffer.writeln(
+        '• ${item['nombre']} x${item['cantidad'] ?? 1}: \$${item['precio']} ARS',
+      );
+    }
+
+    buffer.writeln('----------------------------------------');
+    buffer.writeln('💰 *TOTAL ABONADO:* \$${total.toStringAsFixed(2)} ARS');
+    buffer.writeln('\n¡Muchas gracias por abonar en Oqua Club!');
+
+    try {
+      await http.post(
+        Uri.parse('https://servicio-whatsapp-oqua.onrender.com/send-whatsapp'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'phone': limpio, 'message': buffer.toString()}),
+      );
+    } catch (e) {
+      print('⚠️ Error al enviar recibo por WhatsApp: $e');
+    }
+  }
+
   // ✏️ EDICIÓN MANUAL DE PRECIO
   void _editarPrecioItem(int index) {
     final item = _carrito[index];
@@ -86,7 +129,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
     );
   }
 
-  // 🔍 BUSCADOR INTELIGENTE: BÚSQUEDA DE RESERVAS PENDIENTES (PADDLE / TURNOS)
+  // 🔍 BUSCADOR INTELIGENTE: BÚSQUEDA DE RESERVAS PENDIENTES
   Future<void> _buscarReservasPendientes(String socioId) async {
     setState(() {
       _buscandoReservas = true;
@@ -192,7 +235,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
     }
   }
 
-  // 🔍 BUSCADOR INTELIGENTE: VERIFICACIÓN Y CARGA DE CUOTA DEL MES (CON SELECCIÓN DE PERÍODO)
+  // 🔍 BUSCADOR INTELIGENTE: VERIFICACIÓN Y CARGA DE CUOTA DEL MES
   Future<TarifaModel?> _obtenerTarifaVigente({
     required String deporte,
     required String frecuencia,
@@ -221,7 +264,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
   ) async {
     final hoy = DateTime.now();
 
-    // Lista de períodos seleccionables (mes actual y hasta 5 meses a futuro)
     List<String> periodosDisponibles = List.generate(6, (i) {
       final fecha = DateTime(hoy.year, hoy.month + i, 1);
       return "${fecha.year}-${fecha.month.toString().padLeft(2, '0')}";
@@ -237,7 +279,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
     double precioRegular = tarifa?.precioRegular ?? 15000.0;
     double precioEfectivo = tarifa?.precioEfectivo ?? precioRegular;
 
-    // Aplicar porcentaje escolar si corresponde
     if (socioData['esEstudianteEscuela'] == true) {
       final double dto =
           (socioData['descuentoEscolarPorcentaje'] as num?)?.toDouble() ?? 0.0;
@@ -592,7 +633,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
                   ),
                 );
 
-                // Si venía desde el flujo de venta, abre la pasarela de cobro
                 if (esCobroAutomatico) {
                   _mostrarDialogoCobro();
                 }
@@ -612,7 +652,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
   Future<void> _mostrarDialogoCobro() async {
     if (_carrito.isEmpty) return;
 
-    // Verificar si la caja está abierta antes de abrir el diálogo de cobro
     final cajaQuery = await _firestore
         .collection('control_cajas')
         .where('usuario', isEqualTo: _usuarioOperador)
@@ -728,6 +767,11 @@ class _PosCajaPageState extends State<PosCajaPage> {
     final docCajaId = cajaQuery.docs.first.id;
     WriteBatch batch = _firestore.batch();
 
+    // Guardar referencia local antes de limpiar variables de estado
+    final List<Map<String, dynamic>> itemsCobrados = List.from(_carrito);
+    final double totalVentaActual = totalCarrito;
+    final Map<String, dynamic>? datosSocioActual = _socioSeleccionadoPOS;
+
     for (var item in _carrito) {
       if (item['esMatricula'] == true && _socioSeleccionadoId != null) {
         DocumentReference matRef = _firestore
@@ -834,6 +878,21 @@ class _PosCajaPageState extends State<PosCajaPage> {
 
     await batch.commit();
 
+    // 📲 DISPARAR ENVIÓ AUTOMÁTICO DE COMPROBANTE POR WHATSAPP
+    final String? telefonoSocio = datosSocioActual?['telefono'] as String?;
+    final String nombreCliente =
+        datosSocioActual?['nombre'] ?? 'Mostrador Directo';
+
+    if (telefonoSocio != null && telefonoSocio.isNotEmpty) {
+      _enviarComprobantePorWhatsApp(
+        telefono: telefonoSocio,
+        nombreCliente: nombreCliente,
+        items: itemsCobrados,
+        total: totalVentaActual,
+        medioPago: medio,
+      );
+    }
+
     setState(() {
       _carrito.clear();
       _socioSeleccionadoId = null;
@@ -845,7 +904,9 @@ class _PosCajaPageState extends State<PosCajaPage> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('✅ Cobro registrado y comprobante emitido'),
+          content: Text(
+            '✅ Cobro registrado y comprobante enviado por WhatsApp',
+          ),
           backgroundColor: Colors.green,
         ),
       );
@@ -973,7 +1034,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
                           fontWeight: FontWeight.bold,
                         ),
                       ),
-                      // 🟢 INDICADOR Y BOTÓN DE APERTURA MANUAL / ESTADO DE CAJA
                       StreamBuilder<QuerySnapshot>(
                         stream: _firestore
                             .collection('control_cajas')
@@ -1046,7 +1106,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
                       child: LinearProgressIndicator(color: Colors.orange),
                     ),
 
-                  // 🎾 RESERVAS DE CANCHAS/PADDLE ENCONTRADAS PARA EL SOCIO
                   if (_reservasPendientesDelSocio.isNotEmpty) ...[
                     const SizedBox(height: 12),
                     ..._reservasPendientesDelSocio.map((doc) {
