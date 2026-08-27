@@ -1,20 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'firebase_options.dart'; //
-import 'features/auth/login_page.dart'; //
+import 'firebase_options.dart';
+import 'features/auth/login_page.dart';
+import 'features/socios/socio_login_page.dart';
 
 void main() async {
   try {
-    WidgetsFlutterBinding.ensureInitialized(); //[cite: 6]
+    WidgetsFlutterBinding.ensureInitialized();
 
     await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform, //[cite: 6]
+      options: DefaultFirebaseOptions.currentPlatform,
     );
   } catch (e) {
     debugPrint('🚨 Error crítico inicializando Firebase: $e');
   }
 
-  runApp(const MiClubApp()); //[cite: 6]
+  runApp(const MiClubApp());
 }
 
 class MiClubApp extends StatelessWidget {
@@ -23,16 +24,21 @@ class MiClubApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      debugShowCheckedModeBanner: false, //[cite: 6]
-      title: 'Aqua & Paddle Club', //[cite: 6]
+      debugShowCheckedModeBanner: false,
+      title: 'Aqua & Paddle Club',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF1E293B), //[cite: 6]
-        ),
-        useMaterial3: true, //[cite: 6]
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1E293B)),
+        useMaterial3: true,
       ),
-      // 📌 Nota: Si te logueás y no avanza, el problema está dentro de LoginPage o el AppShell que procesa los roles.
-      home: const LoginPage(), //[cite: 6]
+
+      // 💻 Mantiene la Web Administrativa como punto inicial por defecto
+      home: const LoginPage(),
+
+      // 📱 Rutas para acceder a las aplicaciones móviles aisladas
+      routes: {
+        '/admin': (context) => const LoginPage(),
+        '/socio': (context) => const SocioLoginPage(),
+      },
     );
   }
 }

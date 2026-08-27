@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'auth_services.dart';
 import '../dashboard/dashboard_page.dart';
+import '../socios/socio_dashboard_page.dart'; // 👈 Import del Dashboard de Socios
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -17,10 +21,15 @@ class _LoginPageState extends State<LoginPage> {
   String _modoActual = 'login';
   bool _cargando = false;
 
-  void _mostrarMensaje(String mensaje, Color color) {
+  void _mostrarMensaje(
+    String mensaje,
+    Color color, [
+    BuildContext? currentContext,
+  ]) {
+    final ctx = currentContext ?? context;
     if (!mounted) return;
     ScaffoldMessenger.of(
-      context,
+      ctx,
     ).showSnackBar(SnackBar(content: Text(mensaje), backgroundColor: color));
   }
 
@@ -81,7 +90,10 @@ class _LoginPageState extends State<LoginPage> {
                       : () {
                           Navigator.pop(dialogContext);
                         },
-                  child: const Text('Cancelar', style: TextStyle(color: Colors.grey)),
+                  child: const Text(
+                    'Cancelar',
+                    style: TextStyle(color: Colors.grey),
+                  ),
                 ),
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
@@ -99,6 +111,7 @@ class _LoginPageState extends State<LoginPage> {
                             _mostrarMensaje(
                               'Ingresa un DNI válido.',
                               Colors.orange,
+                              dialogContext,
                             );
                             return;
                           }
@@ -107,17 +120,19 @@ class _LoginPageState extends State<LoginPage> {
                           final resp = await AuthService().vincularSocioPorDni(
                             dni,
                           );
+
+                          if (!dialogContext.mounted) return;
+
                           setDialogState(() => vinculando = false);
 
                           if (resp['exito'] == true) {
                             resultadoExitoso = true;
-                            if (dialogContext.mounted) {
-                              Navigator.pop(dialogContext);
-                            }
+                            Navigator.pop(dialogContext);
                           } else {
                             _mostrarMensaje(
                               resp['mensaje'] ?? 'Error al vincular.',
                               Colors.redAccent,
+                              dialogContext,
                             );
                           }
                         },
@@ -142,7 +157,7 @@ class _LoginPageState extends State<LoginPage> {
     return resultadoExitoso;
   }
 
-  // 🔄 FLUJO COMPLETO POST-AUTENTICACIÓN
+  // 🔄 FLUJO COMPLETO POST-AUTENTICACIÓN RECONOCIENDO EL ROL
   Future<void> _procesarPostLogin(User user, Color colorTema) async {
     String rol = await AuthService().obtenerRolUsuario(user.uid);
 
@@ -156,7 +171,7 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
 
-    // Si es un socio (no admin), verificar que esté en el padrón por DNI
+    // 📱 SI ES SOCIO: VERIFICAR VINCULACIÓN Y REDIRIGIR A SU VISTA DEDICADA
     if (rol == 'socio') {
       bool yaVinculado = await AuthService().estaUsuarioVinculado(user.uid);
 
@@ -173,17 +188,42 @@ class _LoginPageState extends State<LoginPage> {
           return;
         }
       }
+
+      // 🔍 Buscar el documento específico del socio en Firestore
+      final snapSocio = await FirebaseFirestore.instance
+          .collection('socios')
+          .where('usuarioUid', isEqualTo: user.uid)
+          .limit(1)
+          .get();
+
+      setState(() => _cargando = false);
+      _mostrarMensaje('¡Bienvenido/a a tu portal de socio!', colorTema);
+
+      if (mounted && snapSocio.docs.isNotEmpty) {
+        final docSocio = snapSocio.docs.first;
+
+        // 🎯 Redirección inteligente a la vista nativa de socio
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (context) => SocioDashboardPage(
+              socioId: docSocio.id,
+              socioData: docSocio.data(),
+            ),
+          ),
+        );
+        return;
+      }
     }
 
+    // 💻 SI ES ADMIN/STAFF: REDIRIGIR AL DASHBOARD COMPLETO WEB
     setState(() => _cargando = false);
     _mostrarMensaje('¡Bienvenido/a al sistema!', colorTema);
 
     if (mounted) {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(
-          builder: (context) => DashboardPage(rolUsuario: rol),
-        ),
+        MaterialPageRoute(builder: (context) => DashboardPage(rolUsuario: rol)),
       );
     }
   }
@@ -466,10 +506,7 @@ class _LoginPageState extends State<LoginPage> {
                       final resultado = await AuthService()
                           .iniciarSesionConGoogle();
                       if (resultado != null && resultado.user != null) {
-                        await _procesarPostLogin(
-                          resultado.user!,
-                          oquaPrimary,
-                        );
+                        await _procesarPostLogin(resultado.user!, oquaPrimary);
                       } else {
                         setState(() => _cargando = false);
                       }

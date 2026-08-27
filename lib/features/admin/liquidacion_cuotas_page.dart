@@ -42,7 +42,7 @@ class _LiquidacionCuotasPageState extends State<LiquidacionCuotasPage> {
         title: const Text('Confirmar Facturación Masiva'),
         content: Text(
           '¿Deseás generar las cuotas mensuales de $mesNombre $_anioSeleccionado para todos los socios activos?\n\n'
-          'Se debitará en la cuenta corriente de cada socio según su tarifa asignada y se aplicarán los descuentos escolares correspondientes.',
+          'Se debitará en la cuenta corriente de cada socio según su tarifa asignada. Los socios con promociones vigentes de 3/6 meses serán omitidos automáticamente.',
         ),
         actions: [
           TextButton(
@@ -227,10 +227,13 @@ class _LiquidacionCuotasPageState extends State<LiquidacionCuotasPage> {
                       '• Cuotas Generadas: ${_ultimoResultado!['procesados']} socios.',
                     ),
                     Text(
+                      '• Socios Cubiertos por Promoción Vigente: ${_ultimoResultado!['omitidosPorPromocion'] ?? 0}.',
+                    ),
+                    Text(
                       '• Socios Omitidos (Ya poseían cuota del mes): ${_ultimoResultado!['omitidos']}.',
                     ),
                     Text(
-                      '• Socios Omitidos por Falta de Tarifa: ${_ultimoResultado!['fallidosSinTarifa']}.',
+                      '• Omitidos por Falta de Tarifa: ${_ultimoResultado!['fallidosSinTarifa']}.',
                     ),
                     const SizedBox(height: 8),
                     Text(

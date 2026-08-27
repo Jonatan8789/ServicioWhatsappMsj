@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:intl/intl.dart';
 import 'package:natatorio_app/features/admin/proveedores_compras_page.dart';
 import 'package:natatorio_app/features/admin/reportes_bi_page.dart';
 import 'package:natatorio_app/features/buffet/explorador_ventas_page.dart';
@@ -31,6 +30,9 @@ import '../buffet/monitor_cocina_page.dart';
 import '../buffet/menu_buffet_page.dart';
 import 'package:natatorio_app/features/paddle/crear_torneo_page.dart';
 import 'package:natatorio_app/features/paddle/detalle_torneo_page.dart';
+
+// 📱 IMPORT DE LA PANTALLA EXCLUSIVA MÓVIL DE SOCIO
+import '../socios/socio_dashboard_page.dart';
 
 class DashboardPage extends StatefulWidget {
   final String rolUsuario;
@@ -63,7 +65,6 @@ class _DashboardPageState extends State<DashboardPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 👤 SALUDO DINÁMICO RECONOCIENDO AL SOCIO EN EL PADRÓN
             StreamBuilder<QuerySnapshot>(
               stream: _firestore
                   .collection('socios')
@@ -227,9 +228,9 @@ class _DashboardPageState extends State<DashboardPage> {
                             }
 
                             final turnosFuturos = snapshot.data!.docs
-                                .map((doc) {
-                                  return doc.data() as Map<String, dynamic>;
-                                })
+                                .map(
+                                  (doc) => doc.data() as Map<String, dynamic>,
+                                )
                                 .where((r) {
                                   final String rId = r['id'] ?? '';
                                   final int rInicio = r['horaInicio'] ?? 0;
@@ -575,7 +576,6 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
-  // 🏆 VISTA DEL MÓDULO DE TORNEOS DE PÁDEL
   Widget _construirVistaTorneos() {
     return Padding(
       padding: const EdgeInsets.all(32.0),
@@ -769,6 +769,103 @@ class _DashboardPageState extends State<DashboardPage> {
 
   @override
   Widget build(BuildContext context) {
+    // 🛡️ RESTRICCIÓN DE SEGURIDAD Y NAVEGACIÓN
+    // Si el usuario no es 'admin', renderiza ÚNICAMENTE el Portal Móvil del Socio
+    if (widget.rolUsuario != 'admin') {
+      return StreamBuilder<QuerySnapshot>(
+        stream: _firestore
+            .collection('socios')
+            .where('usuarioUid', isEqualTo: _userActual?.uid ?? '')
+            .limit(1)
+            .snapshots(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Scaffold(
+              body: Center(child: CircularProgressIndicator()),
+            );
+          }
+
+          if (snapshot.hasData && snapshot.data!.docs.isNotEmpty) {
+            final docSocio = snapshot.data!.docs.first;
+            // 📱 Carga limpia e individual del Portal del Socio
+            return SocioDashboardPage(
+              socioId: docSocio.id,
+              socioData: docSocio.data() as Map<String, dynamic>,
+            );
+          }
+
+          // Si el usuario tiene rol socio pero aún no se vinculó con su ficha por DNI
+          return Scaffold(
+            backgroundColor: const Color(0xFFF8FAFC),
+            appBar: AppBar(
+              title: const Text('Portal de Socios'),
+              backgroundColor: const Color(0xFF0A3B43),
+              foregroundColor: Colors.white,
+            ),
+            body: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(32.0),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(
+                      Icons.badge_outlined,
+                      size: 70,
+                      color: Colors.orange,
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Ficha pendiente de vinculación',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Tu cuenta (${_userActual?.email}) aún no está vinculada a tu número de socio.',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.grey),
+                    ),
+                    const SizedBox(height: 24),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF0A3B43),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 14,
+                        ),
+                      ),
+                      icon: const Icon(
+                        Icons.logout_rounded,
+                        color: Colors.white,
+                      ),
+                      label: const Text(
+                        'Volver al Login',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                      onPressed: () async {
+                        await AuthService().cerrarSesion();
+                        if (context.mounted) {
+                          Navigator.pushReplacement(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const LoginPage(),
+                            ),
+                          );
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      );
+    }
+
+    // 💻 SI ES ADMINISTRADOR: RENDERIZA LA CONSOLA COMPLETA CON MENÚ LATERAL
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       body: Row(

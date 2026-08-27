@@ -216,18 +216,6 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
   Future<void> _actualizarSocio() async {
     if (!_formKey.currentState!.validate()) return;
 
-    if (_deporteSeleccionado == null ||
-        _frecuenciaSeleccionada == null ||
-        _bloqueHorarioSeleccionadoId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Seleccioná el Deporte, Frecuencia y Bloque Horario.'),
-          backgroundColor: Colors.orange,
-        ),
-      );
-      return;
-    }
-
     setState(() => _guardando = true);
 
     try {
@@ -239,7 +227,7 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
         fotoUrlFinal = await _subirArchivo(
           _fotoBytes!,
           'socios/fotos',
-          dni,
+          dni.isEmpty ? 'foto' : dni,
           _fotoNombre!,
         );
       }
@@ -247,7 +235,7 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
         aptoUrlFinal = await _subirArchivo(
           _aptoBytes!,
           'socios/aptos',
-          dni,
+          dni.isEmpty ? 'apto' : dni,
           _aptoNombre!,
         );
       }
@@ -271,8 +259,8 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
         vencimientoAptoMedico:
             _vencimientoApto ?? DateTime.now().add(const Duration(days: 365)),
         contactoEmergencia: _contactoEmergenciaController.text.trim(),
-        deporte: _deporteSeleccionado ?? '',
-        frecuencia: _frecuenciaSeleccionada ?? '',
+        deporte: _deporteSeleccionado ?? 'Socio Natatorio',
+        frecuencia: _frecuenciaSeleccionada ?? 'Sin Especificar',
         dias: _diasSeleccionados,
         idBloqueHorario: _bloqueHorarioSeleccionadoId ?? '',
         saldoCuentaCorriente: widget.socio.saldoCuentaCorriente,
@@ -457,79 +445,52 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
                                 ),
                               ),
                             const SizedBox(height: 32),
+
+                            // 🟢 ÚNICO CAMPO OBLIGATORIO
                             TextFormField(
                               controller: _nombreController,
                               decoration: const InputDecoration(
-                                labelText: 'Nombre Completo',
+                                labelText: 'Apellido y Nombre *',
                                 border: OutlineInputBorder(),
                                 prefixIcon: Icon(Icons.badge_rounded),
                               ),
-                              validator: (v) =>
-                                  v!.trim().isEmpty ? 'Requerido' : null,
+                              validator: (v) => v == null || v.trim().isEmpty
+                                  ? 'El Apellido y Nombre es obligatorio'
+                                  : null,
                             ),
                             const SizedBox(height: 20),
+
+                            // 🟡 CAMPOS OPCIONALES
                             TextFormField(
                               controller: _dniController,
                               keyboardType: TextInputType.number,
                               decoration: const InputDecoration(
-                                labelText: 'DNI / Identificación',
+                                labelText: 'DNI / Identificación (Opcional)',
                                 border: OutlineInputBorder(),
                                 prefixIcon: Icon(Icons.remember_me_rounded),
                               ),
-                              validator: (v) =>
-                                  v!.trim().isEmpty ? 'Requerido' : null,
                             ),
                             const SizedBox(height: 20),
                             TextFormField(
                               controller: _telefonoController,
                               keyboardType: TextInputType.phone,
                               decoration: const InputDecoration(
-                                labelText:
-                                    'Teléfono / WhatsApp (Notificaciones)',
-                                hintText:
-                                    'Ej: 5491112345678 (Con código de área)',
+                                labelText: 'Teléfono / WhatsApp (Opcional)',
+                                hintText: 'Ej: 5491112345678',
                                 prefixIcon: Icon(Icons.phone_android_rounded),
                                 border: OutlineInputBorder(),
                               ),
-                              validator: (value) {
-                                if (value == null || value.trim().isEmpty) {
-                                  return 'El teléfono es obligatorio para notificaciones';
-                                }
-                                final numLimpio = value.replaceAll(
-                                  RegExp(r'[\s\-\+]'),
-                                  '',
-                                );
-                                if (!RegExp(
-                                  r'^\d{10,15}$',
-                                ).hasMatch(numLimpio)) {
-                                  return 'Ingrese un número válido con código de área (10 a 15 dígitos)';
-                                }
-                                return null;
-                              },
                             ),
                             const SizedBox(height: 20),
                             TextFormField(
                               controller: _emailController,
                               keyboardType: TextInputType.emailAddress,
                               decoration: const InputDecoration(
-                                labelText:
-                                    'Correo Electrónico (Notificaciones)',
+                                labelText: 'Correo Electrónico (Opcional)',
                                 hintText: 'ejemplo@correo.com',
                                 prefixIcon: Icon(Icons.email_rounded),
                                 border: OutlineInputBorder(),
                               ),
-                              validator: (value) {
-                                if (value == null || value.trim().isEmpty) {
-                                  return 'El email es obligatorio para notificaciones';
-                                }
-                                final emailRegex = RegExp(
-                                  r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$',
-                                );
-                                if (!emailRegex.hasMatch(value.trim())) {
-                                  return 'Ingrese una dirección de correo válida';
-                                }
-                                return null;
-                              },
                             ),
                             const SizedBox(height: 20),
                             ListTile(
@@ -539,7 +500,7 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
                               ),
                               title: Text(
                                 _fechaNacimiento == null
-                                    ? 'Seleccionar Fecha de Nacimiento'
+                                    ? 'Fecha de Nacimiento (Opcional)'
                                     : 'Nacimiento: ${DateFormat('dd/MM/yyyy').format(_fechaNacimiento!)}',
                               ),
                               shape: RoundedRectangleBorder(
@@ -561,7 +522,7 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
                             ),
                             const SizedBox(height: 40),
                             const Text(
-                              '2. Área Médica y de Emergencias',
+                              '2. Área Médica y de Emergencias (Opcional)',
                               style: TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.bold,
@@ -572,13 +533,10 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
                             TextFormField(
                               controller: _contactoEmergenciaController,
                               decoration: const InputDecoration(
-                                labelText:
-                                    'Contacto de Emergencia (Nombre y Teléfono)',
+                                labelText: 'Contacto de Emergencia (Opcional)',
                                 border: OutlineInputBorder(),
                                 prefixIcon: Icon(Icons.heart_broken_rounded),
                               ),
-                              validator: (v) =>
-                                  v!.trim().isEmpty ? 'Requerido' : null,
                             ),
                             const SizedBox(height: 20),
                             Container(
@@ -663,6 +621,7 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
                     const SizedBox(width: 40),
 
                     Expanded(
+                      flex: 2,
                       child: Container(
                         padding: const EdgeInsets.all(32),
                         decoration: BoxDecoration(
@@ -673,7 +632,7 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text(
-                              '3. Asignación Deportiva',
+                              '3. Asignación Deportiva (Opcional)',
                               style: TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.bold,

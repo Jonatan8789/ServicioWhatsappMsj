@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:intl/intl.dart';
 import 'tarifa_model.dart';
 
 class TarifasPage extends StatefulWidget {
@@ -11,21 +12,35 @@ class TarifasPage extends StatefulWidget {
 
 class _TarifasPageState extends State<TarifasPage> {
   final _formKey = GlobalKey<FormState>();
-  final _precioController = TextEditingController();
+  final _precioRegularController = TextEditingController();
+  final _precioEfectivoController = TextEditingController();
+  final _matriculaController = TextEditingController(text: '20000');
+  final _leyendaPromoController = TextEditingController(
+    text: 'Hasta 3 cuotas sin interés abonando Miércoles y Sábados',
+  );
 
-  List<String> _deportes = [];
-  List<String> _frecuencias = [];
-
-  // Constantes fijas para la duración del alquiler de canchas
-  final List<String> _duracionesCancha = [
-    '60 Minutos (1 Hora)',
-    '90 Minutos (1.5 Horas)',
-    '120 Minutos (2 Horas)',
+  List<String> _deportes = [
+    'Natación / Pileta Libre',
+    'Escuela de Natación',
+    'Pádel',
+  ];
+  List<String> _frecuencias = [
+    'Pase Libre Mensual',
+    '2 veces a la semana',
+    '3 veces a la semana',
+    'Promo 3 Meses',
+    'Promo 6 Meses',
   ];
 
   String? _deporteSel;
-  String? _frecuenciaSel; // Se usará tanto para Frecuencia como para Duración
+  String? _frecuenciaSel;
+  DateTime _fechaDesde = DateTime.now();
+  DateTime? _fechaHasta;
   bool _cargandoConstantes = true;
+
+  // 🏷️ ESTADOS PARA PROMOCIONES
+  bool _esPromocion = false;
+  int _duracionMesesSel = 3;
 
   @override
   void initState() {
@@ -35,7 +50,10 @@ class _TarifasPageState extends State<TarifasPage> {
 
   @override
   void dispose() {
-    _precioController.dispose();
+    _precioRegularController.dispose();
+    _precioEfectivoController.dispose();
+    _matriculaController.dispose();
+    _leyendaPromoController.dispose();
     super.dispose();
   }
 
@@ -45,26 +63,41 @@ class _TarifasPageState extends State<TarifasPage> {
       final resultados = await Future.wait([
         configRef.doc('deportes').get(),
         configRef.doc('frecuencias').get(),
+        configRef.doc('matricula_anual').get(),
       ]);
 
       setState(() {
-        if (resultados[0].exists) {
-          _deportes = List<String>.from(resultados[0].data()?['lista'] ?? []);
+        if (resultados[0].exists && resultados[0].data()?['lista'] != null) {
+          _deportes = List<String>.from(resultados[0].data()!['lista']);
         }
-        // Nos aseguramos de agregar "Paddle (Alquiler Cancha)" a la lista si no existiera en Firestore
-        if (!_deportes.contains('Paddle (Alquiler Cancha)')) {
-          _deportes.add('Paddle (Alquiler Cancha)');
+        if (resultados[1].exists && resultados[1].data()?['lista'] != null) {
+          _frecuencias = List<String>.from(resultados[1].data()!['lista']);
         }
-
-        if (resultados[1].exists) {
-          _frecuencias = List<String>.from(
-            resultados[1].data()?['lista'] ?? [],
-          );
+        if (resultados[2].exists) {
+          _matriculaController.text = (resultados[2].data()?['monto'] ?? 20000)
+              .toString();
         }
         _cargandoConstantes = false;
       });
-    } catch (e) {
+    } catch (_) {
       setState(() => _cargandoConstantes = false);
+    }
+  }
+
+  Future<void> _guardarMatricula() async {
+    final monto = double.tryParse(_matriculaController.text.trim()) ?? 20000.0;
+    await FirebaseFirestore.instance
+        .collection('configuracion')
+        .doc('matricula_anual')
+        .set({'monto': monto, 'actualizado': DateTime.now()});
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('¡Valor de Matrícula Anual actualizado!'),
+          backgroundColor: Colors.green,
+        ),
+      );
     }
   }
 
@@ -74,45 +107,53 @@ class _TarifasPageState extends State<TarifasPage> {
         _frecuenciaSel == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Por favor, completa todos los campos.'),
+          content: Text('Completa Deporte y Frecuencia.'),
           backgroundColor: Colors.orange,
         ),
       );
       return;
     }
 
-    final precio = double.tryParse(_precioController.text.trim()) ?? 0.0;
-    final idDocumento = "${_deporteSel}_$_frecuenciaSel";
+    final pReg = double.tryParse(_precioRegularController.text.trim()) ?? 0.0;
+    final pEf = double.tryParse(_precioEfectivoController.text.trim()) ?? pReg;
 
+    final nuevoDocRef = FirebaseFirestore.instance.collection('tarifas').doc();
     final nuevaTarifa = TarifaModel(
-      id: idDocumento,
+      id: nuevoDocRef.id,
       deporte: _deporteSel!,
-      frecuencia:
-          _frecuenciaSel!, // Almacena la frecuencia o la duración según corresponda
-      precio: precio,
+      frecuencia: _frecuenciaSel!,
+      precioRegular: pReg,
+      precioEfectivo: pEf,
+      fechaDesde: _fechaDesde,
+      fechaHasta: _fechaHasta,
+      tipo: _esPromocion ? 'PROMOCION' : 'REGULAR',
+      duracionMeses: _esPromocion ? _duracionMesesSel : 1,
+      valorFinalTotal: _esPromocion ? (pReg * _duracionMesesSel) : null,
+      leyendaPromocion: _esPromocion
+          ? _leyendaPromoController.text.trim()
+          : null,
     );
 
-    await FirebaseFirestore.instance
-        .collection('tarifas')
-        .doc(idDocumento)
-        .set(nuevaTarifa.toFirestore());
+    await nuevoDocRef.set(nuevaTarifa.toFirestore());
 
-    _precioController.clear();
+    _precioRegularController.clear();
+    _precioEfectivoController.clear();
     setState(() {
       _deporteSel = null;
       _frecuenciaSel = null;
+      _esPromocion = false;
+      _fechaDesde = DateTime.now();
+      _fechaHasta = null;
     });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('¡Tarifa/Alquiler guardado con éxito!'),
-        backgroundColor: Colors.green,
-      ),
-    );
-  }
-
-  Future<void> _eliminarTarifa(String id) async {
-    await FirebaseFirestore.instance.collection('tarifas').doc(id).delete();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('¡Tarifa / Promoción guardada exitosamente!'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
   }
 
   @override
@@ -121,151 +162,317 @@ class _TarifasPageState extends State<TarifasPage> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    // Flag inteligente para saber si estamos configurando cuotas de socios o alquileres
-    final bool esAlquilerCancha = _deporteSel == 'Paddle (Alquiler Cancha)';
-
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       body: Padding(
-        padding: const EdgeInsets.all(40.0),
+        padding: const EdgeInsets.all(32.0),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // COLUMNA IZQUIERDA: Formulario Dinámico
             Expanded(
               flex: 1,
-              child: Container(
-                padding: const EdgeInsets.all(32),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: const Color(0xFFE2E8F0)),
-                ),
-                child: Form(
-                  key: _formKey,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text(
-                        'Asignar Nueva Tarifa / Turno',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF0F172A),
-                        ),
+              child: SingleChildScrollView(
+                child: Column(
+                  children: [
+                    // CARD 1: MATRÍCULA ANUAL
+                    Container(
+                      padding: const EdgeInsets.all(24),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.shade50,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: Colors.amber.shade300),
                       ),
-                      const SizedBox(height: 8),
-                      Text(
-                        esAlquilerCancha
-                            ? 'Define el costo por bloque de tiempo para los turnos de las canchas de paddle.'
-                            : 'Cruza una actividad con su frecuencia para definir el valor de la cuota mensual.',
-                        style: const TextStyle(
-                          fontSize: 13,
-                          color: Colors.grey,
-                        ),
-                      ),
-                      const SizedBox(height: 24),
-
-                      // Selector de Actividad / Deporte
-                      DropdownButtonFormField<String>(
-                        decoration: const InputDecoration(
-                          labelText: 'Seleccionar Deporte o Recurso',
-                          border: OutlineInputBorder(),
-                        ),
-                        initialValue: _deporteSel,
-                        items: _deportes
-                            .map(
-                              (d) => DropdownMenuItem(value: d, child: Text(d)),
-                            )
-                            .toList(),
-                        onChanged: (val) {
-                          setState(() {
-                            _deporteSel = val;
-                            _frecuenciaSel =
-                                null; // Limpiamos el segundo campo al cambiar de tipo
-                          });
-                        },
-                      ),
-                      const SizedBox(height: 20),
-
-                      // Selector Secundario Inteligente (Frecuencia Semanal O Duración del Turno)
-                      DropdownButtonFormField<String>(
-                        key:
-                            UniqueKey(), // Fuerza el redibujado correcto del componente
-                        decoration: InputDecoration(
-                          labelText: esAlquilerCancha
-                              ? 'Duración del Turno de Alquiler'
-                              : 'Seleccionar Frecuencia Semanal',
-                          border: const OutlineInputBorder(),
-                        ),
-                        initialValue: _frecuenciaSel,
-                        items:
-                            (esAlquilerCancha
-                                    ? _duracionesCancha
-                                    : _frecuencias)
-                                .map(
-                                  (item) => DropdownMenuItem(
-                                    value: item,
-                                    child: Text(item),
-                                  ),
-                                )
-                                .toList(),
-                        onChanged: (val) =>
-                            setState(() => _frecuenciaSel = val),
-                      ),
-                      const SizedBox(height: 20),
-
-                      // Monto de Dinero
-                      TextFormField(
-                        controller: _precioController,
-                        keyboardType: TextInputType.number,
-                        decoration: InputDecoration(
-                          labelText: esAlquilerCancha
-                              ? 'Precio por Turno (\$)'
-                              : 'Precio Cuota Mensual (\$)',
-                          border: const OutlineInputBorder(),
-                          prefixIcon: const Icon(Icons.attach_money_rounded),
-                        ),
-                        validator: (v) =>
-                            v!.isEmpty ? 'Ingresa un monto válido' : null,
-                      ),
-                      const SizedBox(height: 32),
-
-                      ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF0F172A),
-                          foregroundColor: Colors.white,
-                          minimumSize: const Size.fromHeight(54),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Matrícula Anual (Calendario)',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF78350F),
+                            ),
                           ),
-                        ),
-                        icon: Icon(
-                          esAlquilerCancha
-                              ? Icons.sports_tennis_rounded
-                              : Icons.add_card_rounded,
-                        ),
-                        label: Text(
-                          esAlquilerCancha
-                              ? 'Establecer Precio Alquiler'
-                              : 'Establecer Precio Cuota',
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        onPressed: _guardarTarifa,
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: TextFormField(
+                                  controller: _matriculaController,
+                                  keyboardType: TextInputType.number,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Valor Anual (\$)',
+                                    border: OutlineInputBorder(),
+                                    prefixIcon: Icon(Icons.badge),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.amber.shade800,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 20,
+                                    horizontal: 16,
+                                  ),
+                                ),
+                                onPressed: _guardarMatricula,
+                                child: const Text(
+                                  'Guardar',
+                                  style: TextStyle(color: Colors.white),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(height: 24),
+
+                    // CARD 2: ALTA DE TARIFA O PROMOCIÓN
+                    Container(
+                      padding: const EdgeInsets.all(24),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                      ),
+                      child: Form(
+                        key: _formKey,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text(
+                                  'Definir Tarifa / Promoción',
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                FilterChip(
+                                  label: const Text('¿Es Promoción?'),
+                                  selected: _esPromocion,
+                                  selectedColor: Colors.amber.shade200,
+                                  onSelected: (val) =>
+                                      setState(() => _esPromocion = val),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+
+                            DropdownButtonFormField<String>(
+                              decoration: const InputDecoration(
+                                labelText: 'Deporte / Programa',
+                                border: OutlineInputBorder(),
+                              ),
+                              value: _deporteSel,
+                              items: _deportes
+                                  .map(
+                                    (d) => DropdownMenuItem(
+                                      value: d,
+                                      child: Text(d),
+                                    ),
+                                  )
+                                  .toList(),
+                              onChanged: (val) =>
+                                  setState(() => _deporteSel = val),
+                            ),
+                            const SizedBox(height: 16),
+
+                            DropdownButtonFormField<String>(
+                              decoration: const InputDecoration(
+                                labelText: 'Frecuencia / Nombre Paquete',
+                                border: OutlineInputBorder(),
+                              ),
+                              value: _frecuenciaSel,
+                              items: _frecuencias
+                                  .map(
+                                    (f) => DropdownMenuItem(
+                                      value: f,
+                                      child: Text(f),
+                                    ),
+                                  )
+                                  .toList(),
+                              onChanged: (val) =>
+                                  setState(() => _frecuenciaSel = val),
+                            ),
+                            const SizedBox(height: 16),
+
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextFormField(
+                                    controller: _precioRegularController,
+                                    keyboardType: TextInputType.number,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Tarjeta / Regular (\$)',
+                                      border: OutlineInputBorder(),
+                                    ),
+                                    validator: (v) =>
+                                        v!.isEmpty ? 'Requerido' : null,
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: TextFormField(
+                                    controller: _precioEfectivoController,
+                                    keyboardType: TextInputType.number,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Efectivo (\$)',
+                                      border: OutlineInputBorder(),
+                                    ),
+                                    validator: (v) =>
+                                        v!.isEmpty ? 'Requerido' : null,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+
+                            // CAMPOS ADICIONALES DE PROMOCIÓN
+                            if (_esPromocion) ...[
+                              DropdownButtonFormField<int>(
+                                decoration: const InputDecoration(
+                                  labelText: 'Duración del Paquete Promocional',
+                                  border: OutlineInputBorder(),
+                                ),
+                                value: _duracionMesesSel,
+                                items: const [
+                                  DropdownMenuItem(
+                                    value: 3,
+                                    child: Text('3 Meses'),
+                                  ),
+                                  DropdownMenuItem(
+                                    value: 6,
+                                    child: Text('6 Meses'),
+                                  ),
+                                ],
+                                onChanged: (val) => setState(
+                                  () => _duracionMesesSel = val ?? 3,
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              TextFormField(
+                                controller: _leyendaPromoController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Financiación / Leyenda',
+                                  border: OutlineInputBorder(),
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                            ],
+
+                            // SELECTORES DE FECHA DE VIGENCIA
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: ListTile(
+                                    contentPadding: EdgeInsets.zero,
+                                    title: const Text(
+                                      'Vigente Desde:',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.grey,
+                                      ),
+                                    ),
+                                    subtitle: Text(
+                                      DateFormat(
+                                        'dd/MM/yyyy',
+                                      ).format(_fechaDesde),
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    trailing: const Icon(
+                                      Icons.calendar_today,
+                                      color: Colors.teal,
+                                    ),
+                                    onTap: () async {
+                                      final f = await showDatePicker(
+                                        context: context,
+                                        initialDate: _fechaDesde,
+                                        firstDate: DateTime(2020),
+                                        lastDate: DateTime(2030),
+                                      );
+                                      if (f != null)
+                                        setState(() => _fechaDesde = f);
+                                    },
+                                  ),
+                                ),
+                                Expanded(
+                                  child: ListTile(
+                                    contentPadding: EdgeInsets.zero,
+                                    title: const Text(
+                                      'Vigente Hasta:',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.grey,
+                                      ),
+                                    ),
+                                    subtitle: Text(
+                                      _fechaHasta != null
+                                          ? DateFormat(
+                                              'dd/MM/yyyy',
+                                            ).format(_fechaHasta!)
+                                          : 'Indefinido',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    trailing: const Icon(
+                                      Icons.event_busy,
+                                      color: Colors.orange,
+                                    ),
+                                    onTap: () async {
+                                      final f = await showDatePicker(
+                                        context: context,
+                                        initialDate:
+                                            _fechaHasta ??
+                                            _fechaDesde.add(
+                                              const Duration(days: 30),
+                                            ),
+                                        firstDate: _fechaDesde,
+                                        lastDate: DateTime(2030),
+                                      );
+                                      if (f != null)
+                                        setState(() => _fechaHasta = f);
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF0F172A),
+                                minimumSize: const Size.fromHeight(50),
+                              ),
+                              icon: const Icon(Icons.save, color: Colors.white),
+                              label: const Text(
+                                'Guardar Tarifa / Promoción',
+                                style: TextStyle(color: Colors.white),
+                              ),
+                              onPressed: _guardarTarifa,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
-            const SizedBox(width: 40),
+            const SizedBox(width: 32),
 
-            // COLUMNA DERECHA: Listado unificado en tiempo real
+            // COLUMNA DERECHA: HISTORIAL Y VIGENCIAS (CONSULTA RESILIENTE)
             Expanded(
               flex: 2,
               child: Container(
-                padding: const EdgeInsets.all(32),
+                padding: const EdgeInsets.all(24),
                 decoration: BoxDecoration(
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(16),
@@ -275,15 +482,13 @@ class _TarifasPageState extends State<TarifasPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'Matriz de Precios y Alquileres Vigentes',
+                      'Tarifario y Promociones Activas',
                       style: TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
-                        color: Color(0xFF0F172A),
                       ),
                     ),
-                    const SizedBox(height: 24),
-
+                    const SizedBox(height: 16),
                     Expanded(
                       child: StreamBuilder<QuerySnapshot>(
                         stream: FirebaseFirestore.instance
@@ -300,77 +505,92 @@ class _TarifasPageState extends State<TarifasPage> {
                           if (docs.isEmpty) {
                             return const Center(
                               child: Text(
-                                'No hay tarifas ni precios de alquiler cargados aún.',
-                                style: TextStyle(color: Colors.grey),
+                                'No hay tarifas ni promociones guardadas.',
                               ),
                             );
                           }
 
+                          final listaTarifas = docs
+                              .map(
+                                (d) => TarifaModel.fromFirestore(
+                                  d.id,
+                                  d.data() as Map<String, dynamic>,
+                                ),
+                              )
+                              .toList();
+
+                          // Ordenamiento en memoria por fecha
+                          listaTarifas.sort(
+                            (a, b) => b.fechaDesde.compareTo(a.fechaDesde),
+                          );
+
                           return ListView.separated(
-                            itemCount: docs.length,
-                            separatorBuilder: (_, _) =>
-                                const Divider(color: Color(0xFFF1F5F9)),
-                            itemBuilder: (context, index) {
-                              final tarifa = TarifaModel.fromFirestore(
-                                docs[index].id,
-                                docs[index].data() as Map<String, dynamic>,
-                              );
-                              final bool esCancha =
-                                  tarifa.deporte == 'Paddle (Alquiler Cancha)';
+                            itemCount: listaTarifas.length,
+                            separatorBuilder: (_, __) => const Divider(),
+                            itemBuilder: (context, i) {
+                              final t = listaTarifas[i];
+                              final bool esPromo = t.tipo == 'PROMOCION';
 
                               return ListTile(
-                                contentPadding: EdgeInsets.zero,
                                 leading: CircleAvatar(
-                                  backgroundColor:
-                                      (esCancha
-                                              ? Colors.orange
-                                              : Colors.blueAccent)
-                                          .withValues(alpha: 0.1),
+                                  backgroundColor: esPromo
+                                      ? Colors.amber.shade100
+                                      : Colors.teal.shade50,
                                   child: Icon(
-                                    esCancha
-                                        ? Icons.sports_tennis_rounded
-                                        : Icons.monetization_on_rounded,
-                                    color: esCancha
-                                        ? Colors.orange
-                                        : Colors.blueAccent,
+                                    esPromo
+                                        ? Icons.star_rounded
+                                        : Icons.price_change_rounded,
+                                    color: esPromo
+                                        ? Colors.amber.shade900
+                                        : Colors.teal,
                                   ),
                                 ),
-                                title: Text(
-                                  tarifa.deporte,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: Color(0xFF1E293B),
-                                  ),
-                                ),
-                                subtitle: Text(
-                                  esCancha
-                                      ? "Módulo de Reserva: ${tarifa.frecuencia}"
-                                      : "Asignación Cuota: ${tarifa.frecuencia}",
-                                  style: const TextStyle(
-                                    color: Colors.blueGrey,
-                                  ),
-                                ),
-                                trailing: Row(
-                                  mainAxisSize: MainAxisSize.min,
+                                title: Row(
                                   children: [
                                     Text(
-                                      '\$${tarifa.precio.toStringAsFixed(0)}',
+                                      '${t.deporte} - ${t.frecuencia}',
                                       style: const TextStyle(
-                                        fontSize: 18,
                                         fontWeight: FontWeight.bold,
-                                        color: Colors.green,
                                       ),
                                     ),
-                                    const SizedBox(width: 16),
-                                    IconButton(
-                                      icon: const Icon(
-                                        Icons.delete_outline_rounded,
-                                        color: Colors.redAccent,
+                                    const SizedBox(width: 8),
+                                    if (esPromo)
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 6,
+                                          vertical: 2,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: Colors.amber.shade100,
+                                          borderRadius: BorderRadius.circular(
+                                            4,
+                                          ),
+                                        ),
+                                        child: Text(
+                                          'PROMO ${t.duracionMeses} MESES',
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.amber.shade900,
+                                          ),
+                                        ),
                                       ),
-                                      onPressed: () =>
-                                          _eliminarTarifa(tarifa.id),
-                                    ),
                                   ],
+                                ),
+                                subtitle: Text(
+                                  'Regular / Tarjeta: \$${t.precioRegular.toStringAsFixed(0)} | Efectivo: \$${t.precioEfectivo.toStringAsFixed(0)}'
+                                  '${t.valorFinalTotal != null ? '\nValor Final Pack: \$${t.valorFinalTotal!.toStringAsFixed(0)}' : ''}'
+                                  '${t.leyendaPromocion != null ? '\n${t.leyendaPromocion}' : ''}',
+                                ),
+                                trailing: IconButton(
+                                  icon: const Icon(
+                                    Icons.delete,
+                                    color: Colors.redAccent,
+                                  ),
+                                  onPressed: () => FirebaseFirestore.instance
+                                      .collection('tarifas')
+                                      .doc(t.id)
+                                      .delete(),
                                 ),
                               );
                             },

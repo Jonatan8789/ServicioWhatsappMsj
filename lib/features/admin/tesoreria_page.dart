@@ -22,7 +22,7 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
     super.dispose();
   }
 
-  // 📊 WIDGET DE RESUMEN FISCAL & CAJA EN VIVO
+  // 📊 RESUMEN FISCAL & CAJA EN VIVO
   Widget _buildResumenFiscalDiario() {
     final DateTime hoy = DateTime.now();
     final DateTime inicioHoy = DateTime(hoy.year, hoy.month, hoy.day);
@@ -147,6 +147,358 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
     );
   }
 
+  // 🏪 DETALLE EN VIVO DE MEDIOS DE PAGO DE LA CAJA SELECCIONADA
+  Widget _buildDetalleCajaSeleccionada(List<DocumentSnapshot> abiertasDocs) {
+    DocumentSnapshot? docActual;
+    for (var doc in abiertasDocs) {
+      if (doc.id == _cajaSeleccionadaId) {
+        docActual = doc;
+        break;
+      }
+    }
+    docActual ??= abiertasDocs.first;
+
+    final data = docActual.data() as Map<String, dynamic>;
+    final double tArs =
+        (data['saldoInicialARS'] ?? 0.0) + (data['totalEfectivoARS'] ?? 0.0);
+    final double tUsd =
+        (data['saldoInicialUSD'] ?? 0.0) + (data['totalEfectivoUSD'] ?? 0.0);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        GridView.count(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          crossAxisCount: 4,
+          crossAxisSpacing: 16,
+          mainAxisSpacing: 16,
+          childAspectRatio: 2.2,
+          children: [
+            _cardMonto(
+              'Fondo + Efectivo Pesos',
+              '\$${tArs.toStringAsFixed(2)} ARS',
+              Colors.teal,
+            ),
+            _cardMonto(
+              'Fondo + Efectivo Dólares',
+              'US\$ ${tUsd.toStringAsFixed(2)}',
+              Colors.amber,
+            ),
+            _cardMonto(
+              'Recaudado Mercado Pago',
+              '\$${(data['totalMercadoPago'] ?? 0.0).toStringAsFixed(2)} ARS',
+              Colors.blue,
+            ),
+            _cardMonto(
+              'Recaudado MODO',
+              '\$${(data['totalModo'] ?? 0.0).toStringAsFixed(2)} ARS',
+              Colors.purple,
+            ),
+            _cardMonto(
+              'Débito Posnet',
+              '\$${(data['totalTarjetaDebito'] ?? 0.0).toStringAsFixed(2)} ARS',
+              Colors.indigo,
+            ),
+            _cardMonto(
+              'Crédito Posnet',
+              '\$${(data['totalTarjetaCredito'] ?? 0.0).toStringAsFixed(2)} ARS',
+              Colors.orange,
+            ),
+            _cardMonto(
+              'Transferencias CBU',
+              '\$${(data['totalTransferencia'] ?? 0.0).toStringAsFixed(2)} ARS',
+              Colors.cyan,
+            ),
+            _cardMonto(
+              'Fiar / Cuenta Corriente',
+              '\$${(data['totalCtaCte'] ?? 0.0).toStringAsFixed(2)} ARS',
+              Colors.red,
+            ),
+          ],
+        ),
+        const SizedBox(height: 30),
+        const Text(
+          'Auditoría de Novedades e Incidencias en Vivo:',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 12),
+        _buildListaMovimientosCaja(docActual.id),
+      ],
+    );
+  }
+
+  Widget _buildListaMovimientosCaja(String cajaId) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: _firestore
+          .collection('auditoria_movimientos_caja')
+          .where('cajaId', isEqualTo: cajaId)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) return const LinearProgressIndicator();
+        final docs = snapshot.data!.docs;
+        if (docs.isEmpty) {
+          return const Text(
+            'Sin movimientos extraordinarios asentados en este turno.',
+            style: TextStyle(color: Colors.grey, fontSize: 13),
+          );
+        }
+
+        return ListView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: docs.length,
+          itemBuilder: (context, i) {
+            final m = docs[i].data() as Map<String, dynamic>;
+            final bool esEgreso =
+                m['tipo'].toString().contains('Egreso') ||
+                m['tipo'].toString().contains('Faltante');
+            return Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                leading: Icon(
+                  esEgreso ? Icons.arrow_downward : Icons.arrow_upward,
+                  color: esEgreso ? Colors.red : Colors.green,
+                ),
+                title: Text(
+                  '${m['tipo']} - \$${m['monto'].toStringAsFixed(2)} ARS',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                subtitle: Text(
+                  'Concepto: ${m['justificacion']} • Por: ${m['ejecuto']}',
+                ),
+                trailing: Text(
+                  DateFormat(
+                    'HH:mm',
+                  ).format((m['fecha'] as Timestamp).toDate()),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // 📜 EXPLORADOR HISTÓRICO DE CIERRES Y ARQUEOS CONSOLIDADOS
+  Widget _buildHistorialGlobalCerradas(List<DocumentSnapshot> allDocs) {
+    final List<DocumentSnapshot> cerradas = [];
+    for (var d in allDocs) {
+      if ((d.data() as Map<String, dynamic>)['estado'] == 'Cerrada') {
+        cerradas.add(d);
+      }
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Historial de Cajas Cerradas y Arqueos Consolidados',
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 16),
+        if (cerradas.isEmpty)
+          const Text(
+            'No hay registros de cierres en el sistema.',
+            style: TextStyle(color: Colors.grey),
+          ),
+        if (cerradas.isNotEmpty)
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+            ),
+            child: ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: cerradas.length,
+              separatorBuilder: (_, __) =>
+                  const Divider(height: 1, color: Color(0xFFF1F5F9)),
+              itemBuilder: (context, idx) {
+                final data = cerradas[idx].data() as Map<String, dynamic>;
+                final inicio = (data['fechaApertura'] as Timestamp).toDate();
+                final fin = data['fechaCierre'] != null
+                    ? (data['fechaCierre'] as Timestamp).toDate()
+                    : DateTime.now();
+
+                return ListTile(
+                  leading: const Icon(
+                    Icons.history_toggle_off_rounded,
+                    color: Colors.blueGrey,
+                  ),
+                  title: Text(
+                    'Caja: [${data['nombreCajaTerminal']}] • Turno: ${data['usuario']}',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Text(
+                    'Apertura: ${DateFormat('dd/MM/yyyy HH:mm').format(inicio)} | Cierre: ${DateFormat('HH:mm').format(fin)}',
+                  ),
+                  trailing: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        '\$${(data['cierreRealEfectivoARS'] ?? 0.0).toStringAsFixed(0)} ARS',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.teal,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const Text(
+                        'Contado Real',
+                        style: TextStyle(fontSize: 10, color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+      ],
+    );
+  }
+
+  // 🛠️ MAESTRO DE CAJAS / ABM DE TERMINALES
+  Widget _buildSeccionABMTerminales() {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.blue.shade100, width: 1.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Maestro de Puntos de Venta Físicos (ABM Cajas)',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: Colors.blue,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _nombreNuevaTerminalCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Nombre de la Caja (Ej: Recepción Paddle)',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blue.shade800,
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size(180, 54),
+                ),
+                onPressed: () async {
+                  final nom = _nombreNuevaTerminalCtrl.text.trim();
+                  if (nom.isEmpty) return;
+                  await _firestore.collection('terminales_caja').add({
+                    'nombre': nom,
+                    'activa': true,
+                    'fechaCreacion': DateTime.now(),
+                  });
+                  _nombreNuevaTerminalCtrl.clear();
+                },
+                child: const Text(
+                  'Guardar Terminal',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          const Text(
+            'Terminales Registradas:',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+          ),
+          const SizedBox(height: 8),
+          StreamBuilder<QuerySnapshot>(
+            stream: _firestore.collection('terminales_caja').snapshots(),
+            builder: (context, snapshot) {
+              if (!snapshot.hasData) return const LinearProgressIndicator();
+              final docs = snapshot.data!.docs;
+
+              if (docs.isEmpty) {
+                return const Text(
+                  'No hay terminales registradas.',
+                  style: TextStyle(color: Colors.grey),
+                );
+              }
+
+              return ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: docs.length,
+                itemBuilder: (context, i) {
+                  final data = docs[i].data() as Map<String, dynamic>;
+                  return ListTile(
+                    dense: true,
+                    leading: const Icon(
+                      Icons.point_of_sale,
+                      color: Colors.blue,
+                    ),
+                    title: Text(data['nombre'] ?? ''),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete_outline, color: Colors.red),
+                      onPressed: () => _firestore
+                          .collection('terminales_caja')
+                          .doc(docs[i].id)
+                          .delete(),
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _cardMonto(String title, String val, Color c) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: c.withOpacity(0.2), width: 1.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: 11,
+              color: c,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            val,
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w900,
+              color: Color(0xFF0F172A),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool esAdmin = widget.rolUsuario == 'admin';
@@ -221,18 +573,13 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
                     ),
                   ],
                 ),
-
                 const SizedBox(height: 24),
-                // 📊 Integración del Resumen Fiscal Diario
                 _buildResumenFiscalDiario(),
-
                 if (_verPanelABM) ...[
                   const SizedBox(height: 20),
                   _buildSeccionABMTerminales(),
                 ],
-
                 const SizedBox(height: 30),
-
                 if (abiertasDocs.isNotEmpty) ...[
                   const Text(
                     'Seleccionar Terminal Activa para Inspección de Medios de Pago:',
@@ -259,7 +606,6 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
                     onChanged: (v) => setState(() => _cajaSeleccionadaId = v),
                   ),
                   const SizedBox(height: 24),
-
                   _buildDetalleCajaSeleccionada(abiertasDocs),
                 ] else ...[
                   Container(
@@ -280,315 +626,12 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
                     ),
                   ),
                 ],
-
                 const SizedBox(height: 40),
                 _buildHistorialGlobalCerradas(allDocs),
               ],
             ),
           );
         },
-      ),
-    );
-  }
-
-  Widget _buildDetalleCajaSeleccionada(List<DocumentSnapshot> abiertasDocs) {
-    DocumentSnapshot? docActual;
-    for (var doc in abiertasDocs) {
-      if (doc.id == _cajaSeleccionadaId) {
-        docActual = doc;
-        break;
-      }
-    }
-    docActual ??= abiertasDocs.first;
-
-    final data = docActual.data() as Map<String, dynamic>;
-    final double tArs =
-        (data['saldoInicialARS'] ?? 0.0) + (data['totalEfectivoARS'] ?? 0.0);
-    final double tUsd =
-        (data['saldoInicialUSD'] ?? 0.0) + (data['totalEfectivoUSD'] ?? 0.0);
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        GridView.count(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          crossAxisCount: 4,
-          crossAxisSpacing: 16,
-          mainAxisSpacing: 16,
-          childAspectRatio: 2.2,
-          children: [
-            _cardMonto(
-              'Fondo + Efectivo Pesos',
-              '\$${tArs.toStringAsFixed(2)} ARS',
-              Colors.teal,
-            ),
-            _cardMonto(
-              'Fondo + Efectivo Dólares',
-              'US\$ ${tUsd.toStringAsFixed(2)}',
-              Colors.amber,
-            ),
-            _cardMonto(
-              'Recaudado Mercado Pago',
-              '\$${(data['totalMercadoPago'] ?? 0.0).toStringAsFixed(2)} ARS',
-              Colors.blue,
-            ),
-            _cardMonto(
-              'Recaudado MODO',
-              '\$${(data['totalModo'] ?? 0.0).toStringAsFixed(2)} ARS',
-              Colors.purple,
-            ),
-            _cardMonto(
-              'Débito Posnet',
-              '\$${(data['totalTarjetaDebito'] ?? 0.0).toStringAsFixed(2)} ARS',
-              Colors.indigo,
-            ),
-            _cardMonto(
-              'Crédito Posnet',
-              '\$${(data['totalTarjetaCredito'] ?? 0.0).toStringAsFixed(2)} ARS',
-              Colors.orange,
-            ),
-            _cardMonto(
-              'Transferencias CBU',
-              '\$${(data['totalTransferencia'] ?? 0.0).toStringAsFixed(2)} ARS',
-              Colors.cyan,
-            ),
-            _cardMonto(
-              'Fiar / Cuenta Corriente',
-              '\$${(data['totalCtaCte'] ?? 0.0).toStringAsFixed(2)} ARS',
-              Colors.red,
-            ),
-          ],
-        ),
-        const SizedBox(height: 30),
-
-        const Text(
-          'Auditoría de Novedades e Incidencias en Vivo:',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 12),
-        _buildListaMovimientosCaja(docActual.id),
-      ],
-    );
-  }
-
-  Widget _buildListaMovimientosCaja(String cajaId) {
-    return StreamBuilder<QuerySnapshot>(
-      stream: _firestore
-          .collection('auditoria_movimientos_caja')
-          .where('cajaId', isEqualTo: cajaId)
-          .snapshots(),
-      builder: (context, snapshot) {
-        if (!snapshot.hasData) return const LinearProgressIndicator();
-        final docs = snapshot.data!.docs;
-        if (docs.isEmpty) {
-          return const Text(
-            'Sin movimientos extraordinarios asentados en este turno.',
-            style: TextStyle(color: Colors.grey, fontSize: 13),
-          );
-        }
-
-        return ListView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          itemCount: docs.length,
-          itemBuilder: (context, i) {
-            final m = docs[i].data() as Map<String, dynamic>;
-            final bool esEgreso =
-                m['tipo'].toString().contains('Egreso') ||
-                m['tipo'].toString().contains('Faltante');
-            return Card(
-              margin: const EdgeInsets.only(bottom: 8),
-              child: ListTile(
-                leading: Icon(
-                  esEgreso ? Icons.arrow_downward : Icons.arrow_upward,
-                  color: esEgreso ? Colors.red : Colors.green,
-                ),
-                title: Text(
-                  '${m['tipo']} - \$${m['monto'].toStringAsFixed(2)} ARS',
-                  style: const TextStyle(fontWeight: FontWeight.bold),
-                ),
-                subtitle: Text(
-                  'Concepto: ${m['justificacion']} • Por: ${m['ejecuto']}',
-                ),
-                trailing: Text(
-                  DateFormat(
-                    'HH:mm',
-                  ).format((m['fecha'] as Timestamp).toDate()),
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Widget _buildHistorialGlobalCerradas(List<DocumentSnapshot> allDocs) {
-    final List<DocumentSnapshot> cerradas = [];
-    for (var d in allDocs) {
-      if ((d.data() as Map<String, dynamic>)['estado'] == 'Cerrada') {
-        cerradas.add(d);
-      }
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'Historial de Cajas Cerradas y Arqueos Consolidados',
-          style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 16),
-        if (cerradas.isEmpty)
-          const Text(
-            'No hay registros de cierres en el sistema.',
-            style: TextStyle(color: Colors.grey),
-          ),
-
-        Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0xFFE2E8F0)),
-          ),
-          child: ListView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: cerradas.length,
-            itemBuilder: (context, idx) {
-              final data = cerradas[idx].data() as Map<String, dynamic>;
-              final inicio = (data['fechaApertura'] as Timestamp).toDate();
-              final fin = data['fechaCierre'] != null
-                  ? (data['fechaCierre'] as Timestamp).toDate()
-                  : DateTime.now();
-
-              return ListTile(
-                leading: const Icon(
-                  Icons.history_toggle_off_rounded,
-                  color: Colors.blueGrey,
-                ),
-                title: Text(
-                  'Caja: [${data['nombreCajaTerminal']}] • Turno de: ${data['usuario']}',
-                  style: const TextStyle(fontWeight: FontWeight.bold),
-                ),
-                subtitle: Text(
-                  'Duración: ${DateFormat('dd/MM HH:mm').format(inicio)} hasta ${DateFormat('HH:mm').format(fin)}',
-                ),
-                trailing: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(
-                      '\$${(data['cierreRealEfectivoARS'] ?? 0.0).toStringAsFixed(0)} ARS',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: Colors.teal,
-                      ),
-                    ),
-                    const Text(
-                      'Contado Real',
-                      style: TextStyle(fontSize: 10, color: Colors.grey),
-                    ),
-                  ],
-                ),
-              );
-            },
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildSeccionABMTerminales() {
-    return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.blue.shade100, width: 1.5),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Maestro de Puntos de Venta Físicos (ABM Cajas)',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-              color: Colors.blue,
-            ),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _nombreNuevaTerminalCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Nombre de la Caja (Ej: Recepción Paddle)',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 16),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blue.shade800,
-                  foregroundColor: Colors.white,
-                  minimumSize: const Size(180, 54),
-                ),
-                onPressed: () async {
-                  final nom = _nombreNuevaTerminalCtrl.text.trim();
-                  if (nom.isEmpty) return;
-                  await _firestore.collection('terminales_caja').add({
-                    'nombre': nom,
-                    'fechaCreacion': DateTime.now(),
-                  });
-                  _nombreNuevaTerminalCtrl.clear();
-                },
-                child: const Text(
-                  'Guardar Terminal',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _cardMonto(String title, String val, Color c) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: c.withOpacity(0.2), width: 1.5),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Text(
-            title,
-            style: TextStyle(
-              fontSize: 11,
-              color: c,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            val,
-            style: const TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w900,
-              color: Color(0xFF0F172A),
-            ),
-          ),
-        ],
       ),
     );
   }

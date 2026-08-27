@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'package:http/http.dart' as http;
+import '../admin/servicio_mensajeria_page.dart';
 
 class MensajeriaPage extends StatefulWidget {
   final String rolUsuario;
@@ -52,6 +53,19 @@ class _MensajeriaPageState extends State<MensajeriaPage> {
     } catch (_) {}
   }
 
+  /// Despierta/Verifica el servidor de Render antes de iniciar los envíos
+  Future<bool> _asegurarServidorActivo() async {
+    try {
+      final res = await http
+          .get(Uri.parse('$baseUrl/status'))
+          .timeout(const Duration(seconds: 60));
+      return res.statusCode == 200;
+    } catch (e) {
+      debugPrint('Servidor Render dormido o tardando en responder: $e');
+      return false;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -64,6 +78,22 @@ class _MensajeriaPageState extends State<MensajeriaPage> {
         backgroundColor: const Color(0xFF1E293B),
         foregroundColor: Colors.white,
         elevation: 0,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.qr_code_2_rounded),
+            tooltip: 'Estado / Escanear QR WhatsApp',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) =>
+                      ServicioMensajeriaPage(rolUsuario: widget.rolUsuario),
+                ),
+              );
+            },
+          ),
+          const SizedBox(width: 8),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(32.0),
@@ -532,6 +562,22 @@ class _MensajeriaPageState extends State<MensajeriaPage> {
 
     setState(() => _enviando = true);
 
+    if (_canalSeleccionado != 'INTERNO') {
+      final listo = await _asegurarServidorActivo();
+      if (!listo && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'El servidor de envíos está despertando o no responde. Intenta nuevamente en 30 segundos.',
+            ),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        setState(() => _enviando = false);
+        return;
+      }
+    }
+
     try {
       List<Map<String, dynamic>> destinatarios = [];
 
@@ -619,30 +665,26 @@ class _MensajeriaPageState extends State<MensajeriaPage> {
     }
   }
 
-  // 📌 MEJORADO: Normaliza prefijos telefónicos para Argentina
   Future<void> _enviarWhatsAppApi(String telefono, String mensaje) async {
     try {
       String limpio = telefono.replaceAll(RegExp(r'\D'), '');
 
-      // Quitar 0 inicial si lo tiene (ej: 011 -> 11)
       if (limpio.startsWith('0')) limpio = limpio.substring(1);
-
-      // Si empieza con 15 (formato cel local), quitar el 15
       if (limpio.startsWith('15')) limpio = limpio.substring(2);
 
-      // Si no tiene 54 al inicio, agregárselo con el 9
       if (!limpio.startsWith('54')) {
         limpio = '549$limpio';
       } else if (!limpio.startsWith('549')) {
-        // Si tiene 54 pero le falta el 9, agregarlo
         limpio = '549${limpio.substring(2)}';
       }
 
-      final response = await http.post(
-        Uri.parse('$baseUrl/send-whatsapp'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'phone': limpio, 'message': mensaje}),
-      );
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/send-whatsapp'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'phone': limpio, 'message': mensaje}),
+          )
+          .timeout(const Duration(seconds: 30));
 
       if (response.statusCode != 200) {
         debugPrint('Error enviando WhatsApp: ${response.body}');
@@ -658,15 +700,17 @@ class _MensajeriaPageState extends State<MensajeriaPage> {
     String mensajeHtml,
   ) async {
     try {
-      await http.post(
-        Uri.parse('$baseUrl/notificar-email'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'email': email,
-          'asunto': asunto,
-          'mensajeHtml': mensajeHtml,
-        }),
-      );
+      await http
+          .post(
+            Uri.parse('$baseUrl/notificar-email'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'email': email,
+              'asunto': asunto,
+              'mensajeHtml': mensajeHtml,
+            }),
+          )
+          .timeout(const Duration(seconds: 30));
     } catch (e) {
       debugPrint('Excepción enviando Email: $e');
     }

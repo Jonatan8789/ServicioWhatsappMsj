@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'profesor_model.dart';
 import 'alumnos_por_profesor_view.dart';
+import 'reporte_horas_profesores_page.dart'; // 👈 Import del reporte de horas y liquidación
 
 class ProfesoresPage extends StatefulWidget {
   final bool esAdmin;
@@ -147,6 +148,15 @@ class _ProfesoresPageState extends State<ProfesoresPage> {
     });
   }
 
+  void _abrirReporteLiquidacionHoras() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const ReporteHorasProfesoresPage(),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_cargando) {
@@ -176,147 +186,60 @@ class _ProfesoresPageState extends State<ProfesoresPage> {
       backgroundColor: const Color(0xFFF8FAFC),
       body: Padding(
         padding: const EdgeInsets.all(40.0),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: Column(
           children: [
-            // COLUMNA IZQUIERDA: Formulario de Alta / Edición
-            Expanded(
-              flex: 1,
-              child: Container(
-                padding: const EdgeInsets.all(32),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: const Color(0xFFE2E8F0)),
+            // BARRA SUPERIOR DE ACCIÓN RÁPIDA
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Gestión de Staff y Profesores',
+                      style: TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF0F172A),
+                      ),
+                    ),
+                    Text(
+                      'Administrá la nómina docente, asignaciones y liquidaciones de horas.',
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  ],
                 ),
-                child: Form(
-                  key: _formKey,
-                  child: SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          _idProfesorEditando == null
-                              ? 'Registrar Profesor'
-                              : 'Editar Profesor',
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFF0F172A),
-                          ),
-                        ),
-                        const SizedBox(height: 24),
-                        TextFormField(
-                          controller: _nombreController,
-                          decoration: const InputDecoration(
-                            labelText: 'Nombre Completo',
-                            border: OutlineInputBorder(),
-                          ),
-                          validator: (v) => v == null || v.trim().isEmpty
-                              ? 'Ingresa el nombre'
-                              : null,
-                        ),
-                        const SizedBox(height: 20),
-                        TextFormField(
-                          controller: _dniController,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                            labelText: 'DNI',
-                            border: OutlineInputBorder(),
-                          ),
-                          validator: (v) => v == null || v.trim().isEmpty
-                              ? 'Ingresa el DNI'
-                              : null,
-                        ),
-                        const SizedBox(height: 20),
-                        TextFormField(
-                          controller: _telefonoController,
-                          keyboardType: TextInputType.phone,
-                          decoration: const InputDecoration(
-                            labelText: 'Teléfono',
-                            border: OutlineInputBorder(),
-                          ),
-                          validator: (v) => v == null || v.trim().isEmpty
-                              ? 'Ingresa un teléfono'
-                              : null,
-                        ),
-                        const SizedBox(height: 20),
-
-                        // Selector Múltiple de Especialidades (Chips)
-                        const Text(
-                          'Especialidades / Clases:',
-                          style: TextStyle(
-                            fontWeight: FontWeight.w600,
-                            color: Color(0xFF334155),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: _deportesDisponibles.map((deporte) {
-                            final seleccionado = _especialidadesSeleccionadas
-                                .contains(deporte);
-                            return FilterChip(
-                              label: Text(deporte),
-                              selected: seleccionado,
-                              onSelected: (bool val) {
-                                setState(() {
-                                  if (val) {
-                                    _especialidadesSeleccionadas.add(deporte);
-                                  } else {
-                                    _especialidadesSeleccionadas.remove(
-                                      deporte,
-                                    );
-                                  }
-                                });
-                              },
-                            );
-                          }).toList(),
-                        ),
-                        const SizedBox(height: 32),
-
-                        Row(
-                          children: [
-                            if (_idProfesorEditando != null) ...[
-                              Expanded(
-                                child: OutlinedButton(
-                                  onPressed: _limpiarFormulario,
-                                  child: const Text('Cancelar'),
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                            ],
-                            Expanded(
-                              child: ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: const Color(0xFF0F172A),
-                                  foregroundColor: Colors.white,
-                                ),
-                                onPressed: _guardarProfesor,
-                                child: Text(
-                                  _idProfesorEditando == null
-                                      ? 'Dar de Alta'
-                                      : 'Guardar Cambios',
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF0F172A),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 20,
+                      vertical: 16,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
                     ),
                   ),
+                  onPressed: _abrirReporteLiquidacionHoras,
+                  icon: const Icon(
+                    Icons.assessment_rounded,
+                    color: Colors.tealAccent,
+                  ),
+                  label: const Text(
+                    'Reporte y Liquidación de Horas',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
                 ),
-              ),
+              ],
             ),
-            const SizedBox(width: 40),
+            const SizedBox(height: 24),
 
-            // COLUMNA DERECHA: Nómina y Explorador de Alumnos
             Expanded(
-              flex: 2,
-              child: Column(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Nómina del Staff
+                  // COLUMNA IZQUIERDA: Formulario de Alta / Edición
                   Expanded(
                     flex: 1,
                     child: Container(
@@ -326,95 +249,249 @@ class _ProfesoresPageState extends State<ProfesoresPage> {
                         borderRadius: BorderRadius.circular(16),
                         border: Border.all(color: const Color(0xFFE2E8F0)),
                       ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'Nómina del Staff de Profesores',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const Text(
-                            'Toca un profesor para gestionar sus alumnos.',
-                            style: TextStyle(color: Colors.grey, fontSize: 13),
-                          ),
-                          const SizedBox(height: 20),
-                          Expanded(
-                            child: StreamBuilder<QuerySnapshot>(
-                              stream: FirebaseFirestore.instance
-                                  .collection('profesores')
-                                  .snapshots(),
-                              builder: (context, snapshot) {
-                                if (!snapshot.hasData) {
-                                  return const Center(
-                                    child: CircularProgressIndicator(),
+                      child: Form(
+                        key: _formKey,
+                        child: SingleChildScrollView(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                _idProfesorEditando == null
+                                    ? 'Registrar Profesor'
+                                    : 'Editar Profesor',
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF0F172A),
+                                ),
+                              ),
+                              const SizedBox(height: 24),
+                              TextFormField(
+                                controller: _nombreController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Nombre Completo',
+                                  border: OutlineInputBorder(),
+                                ),
+                                validator: (v) => v == null || v.trim().isEmpty
+                                    ? 'Ingresa el nombre'
+                                    : null,
+                              ),
+                              const SizedBox(height: 20),
+                              TextFormField(
+                                controller: _dniController,
+                                keyboardType: TextInputType.number,
+                                decoration: const InputDecoration(
+                                  labelText: 'DNI',
+                                  border: OutlineInputBorder(),
+                                ),
+                                validator: (v) => v == null || v.trim().isEmpty
+                                    ? 'Ingresa el DNI'
+                                    : null,
+                              ),
+                              const SizedBox(height: 20),
+                              TextFormField(
+                                controller: _telefonoController,
+                                keyboardType: TextInputType.phone,
+                                decoration: const InputDecoration(
+                                  labelText: 'Teléfono',
+                                  border: OutlineInputBorder(),
+                                ),
+                                validator: (v) => v == null || v.trim().isEmpty
+                                    ? 'Ingresa un teléfono'
+                                    : null,
+                              ),
+                              const SizedBox(height: 20),
+
+                              // Selector Múltiple de Especialidades (Chips)
+                              const Text(
+                                'Especialidades / Clases:',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFF334155),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: _deportesDisponibles.map((deporte) {
+                                  final seleccionado =
+                                      _especialidadesSeleccionadas.contains(
+                                        deporte,
+                                      );
+                                  return FilterChip(
+                                    label: Text(deporte),
+                                    selected: seleccionado,
+                                    onSelected: (bool val) {
+                                      setState(() {
+                                        if (val) {
+                                          _especialidadesSeleccionadas.add(
+                                            deporte,
+                                          );
+                                        } else {
+                                          _especialidadesSeleccionadas.remove(
+                                            deporte,
+                                          );
+                                        }
+                                      });
+                                    },
                                   );
-                                }
-                                final docs = snapshot.data!.docs;
+                                }).toList(),
+                              ),
+                              const SizedBox(height: 32),
 
-                                return ListView.separated(
-                                  itemCount: docs.length,
-                                  separatorBuilder: (_, _) =>
-                                      const Divider(color: Color(0xFFF1F5F9)),
-                                  itemBuilder: (context, index) {
-                                    final profe = ProfesorModel.fromFirestore(
-                                      docs[index].id,
-                                      docs[index].data()
-                                          as Map<String, dynamic>,
-                                    );
-                                    final esSeleccionado =
-                                        _profesorSeleccionado?.id == profe.id;
-
-                                    return ListTile(
-                                      selected: esSeleccionado,
-                                      selectedTileColor: Colors.blue.withValues(
-                                        alpha: 0.05,
+                              Row(
+                                children: [
+                                  if (_idProfesorEditando != null) ...[
+                                    Expanded(
+                                      child: OutlinedButton(
+                                        onPressed: _limpiarFormulario,
+                                        child: const Text('Cancelar'),
                                       ),
-                                      title: Text(
-                                        profe.nombre,
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.bold,
+                                    ),
+                                    const SizedBox(width: 12),
+                                  ],
+                                  Expanded(
+                                    child: ElevatedButton(
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: const Color(
+                                          0xFF0F172A,
                                         ),
+                                        foregroundColor: Colors.white,
                                       ),
-                                      subtitle: Text(
-                                        'Especialidades: ${profe.especialidades.join(", ")} • Tel: ${profe.telefono}',
+                                      onPressed: _guardarProfesor,
+                                      child: Text(
+                                        _idProfesorEditando == null
+                                            ? 'Dar de Alta'
+                                            : 'Guardar Cambios',
                                       ),
-                                      onTap: () {
-                                        setState(() {
-                                          _profesorSeleccionado = profe;
-                                        });
-                                      },
-                                      trailing: IconButton(
-                                        icon: const Icon(
-                                          Icons.edit_rounded,
-                                          color: Colors.blueGrey,
-                                        ),
-                                        onPressed: () =>
-                                            _prepararEdicion(profe),
-                                      ),
-                                    );
-                                  },
-                                );
-                              },
-                            ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
                           ),
-                        ],
+                        ),
                       ),
                     ),
                   ),
+                  const SizedBox(width: 40),
 
-                  // Panel Inferior: Alumnos del Profesor Seleccionado
-                  if (_profesorSeleccionado != null) ...[
-                    const SizedBox(height: 24),
-                    Expanded(
-                      flex: 1,
-                      child: AlumnosPorProfesorView(
-                        profesor: _profesorSeleccionado!,
-                      ),
+                  // COLUMNA DERECHA: Nómina y Explorador de Alumnos
+                  Expanded(
+                    flex: 2,
+                    child: Column(
+                      children: [
+                        // Nómina del Staff
+                        Expanded(
+                          flex: 1,
+                          child: Container(
+                            padding: const EdgeInsets.all(32),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                color: const Color(0xFFE2E8F0),
+                              ),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Nómina del Staff de Profesores',
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const Text(
+                                  'Toca un profesor para gestionar sus alumnos.',
+                                  style: TextStyle(
+                                    color: Colors.grey,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                                const SizedBox(height: 20),
+                                Expanded(
+                                  child: StreamBuilder<QuerySnapshot>(
+                                    stream: FirebaseFirestore.instance
+                                        .collection('profesores')
+                                        .snapshots(),
+                                    builder: (context, snapshot) {
+                                      if (!snapshot.hasData) {
+                                        return const Center(
+                                          child: CircularProgressIndicator(),
+                                        );
+                                      }
+                                      final docs = snapshot.data!.docs;
+
+                                      return ListView.separated(
+                                        itemCount: docs.length,
+                                        separatorBuilder: (_, _) =>
+                                            const Divider(
+                                              color: Color(0xFFF1F5F9),
+                                            ),
+                                        itemBuilder: (context, index) {
+                                          final profe =
+                                              ProfesorModel.fromFirestore(
+                                                docs[index].id,
+                                                docs[index].data()
+                                                    as Map<String, dynamic>,
+                                              );
+                                          final esSeleccionado =
+                                              _profesorSeleccionado?.id ==
+                                              profe.id;
+
+                                          return ListTile(
+                                            selected: esSeleccionado,
+                                            selectedTileColor: Colors.blue
+                                                .withValues(alpha: 0.05),
+                                            title: Text(
+                                              profe.nombre,
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                            subtitle: Text(
+                                              'Especialidades: ${profe.especialidades.join(", ")} • Tel: ${profe.telefono}',
+                                            ),
+                                            onTap: () {
+                                              setState(() {
+                                                _profesorSeleccionado = profe;
+                                              });
+                                            },
+                                            trailing: IconButton(
+                                              icon: const Icon(
+                                                Icons.edit_rounded,
+                                                color: Colors.blueGrey,
+                                              ),
+                                              onPressed: () =>
+                                                  _prepararEdicion(profe),
+                                            ),
+                                          );
+                                        },
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+
+                        // Panel Inferior: Alumnos del Profesor Seleccionado
+                        if (_profesorSeleccionado != null) ...[
+                          const SizedBox(height: 24),
+                          Expanded(
+                            flex: 1,
+                            child: AlumnosPorProfesorView(
+                              profesor: _profesorSeleccionado!,
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
-                  ],
+                  ),
                 ],
               ),
             ),

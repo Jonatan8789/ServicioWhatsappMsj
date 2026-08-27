@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'socio_model.dart';
 
-class SocioDetallePage extends StatelessWidget {
+class SocioDetallePage extends StatefulWidget {
   final SocioModel socio;
   final VoidCallback onVolver;
 
@@ -13,39 +14,122 @@ class SocioDetallePage extends StatelessWidget {
     required this.onVolver,
   });
 
+  @override
+  State<SocioDetallePage> createState() => _SocioDetallePageState();
+}
+
+class _SocioDetallePageState extends State<SocioDetallePage> {
+  String _etiquetaHorarioTraduccion = 'Cargando horario...';
+
+  @override
+  void initState() {
+    super.initState();
+    _obtenerTraduccionHorario();
+  }
+
+  // 🕒 Traduce la ID "tarde 6" o idBloqueHorario al rango "Desde - Hasta"
+  Future<void> _obtenerTraduccionHorario() async {
+    final String bloqueId = widget.socio.idBloqueHorario;
+    if (bloqueId.isEmpty) {
+      if (mounted) setState(() => _etiquetaHorarioTraduccion = 'Sin horario asignado');
+      return;
+    }
+
+    try {
+      final docHorarios = await FirebaseFirestore.instance
+          .collection('configuracion')
+          .doc('horarios')
+          .get();
+
+      if (docHorarios.exists && docHorarios.data() != null) {
+        final data = docHorarios.data()!;
+        final bloques = data['bloques'] as List<dynamic>? ?? [];
+
+        for (var b in bloques) {
+          if (b['id'] == bloqueId) {
+            final desde = b['horaDesde'] ?? '';
+            final hasta = b['horaHasta'] ?? '';
+            final nombre = b['nombre'] ?? '';
+
+            if (mounted) {
+              setState(() {
+                _etiquetaHorarioTraduccion = desde.isNotEmpty && hasta.isNotEmpty
+                    ? '$nombre ($desde hs a $hasta hs)'
+                    : (nombre.isNotEmpty ? nombre : bloqueId);
+              });
+            }
+            return;
+          }
+        }
+      }
+    } catch (_) {}
+
+    if (mounted) {
+      setState(() => _etiquetaHorarioTraduccion = bloqueId);
+    }
+  }
+
   Future<void> _abrirAptoMedico(BuildContext context) async {
-    if (socio.aptoUrl.isEmpty) {
+    if (widget.socio.aptoUrl.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Este socio no cuenta con un documento de apto físico adjunto.',
-          ),
-        ),
+        const SnackBar(content: Text('Este socio no posee apto físico adjunto.')),
       );
       return;
     }
 
-    final Uri url = Uri.parse(socio.aptoUrl);
+    final Uri url = Uri.parse(widget.socio.aptoUrl);
     try {
       if (await canLaunchUrl(url)) {
         await launchUrl(url, mode: LaunchMode.externalApplication);
-      } else {
-        throw 'No se pudo abrir la URL';
       }
     } catch (e) {
-      showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Enlace del Apto Médico'),
-          content: SelectableText(socio.aptoUrl),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cerrar'),
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Enlace del Apto Médico'),
+            content: SelectableText(widget.socio.aptoUrl),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cerrar'),
+              ),
+            ],
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _registrarMatriculaPrevio() async {
+    final DateTime? fechaSeleccionada = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now(),
+      helpText: 'SELECCIONAR FECHA DE PAGO PREVIA',
+    );
+
+    if (fechaSeleccionada != null) {
+      await FirebaseFirestore.instance
+          .collection('socios')
+          .doc(widget.socio.id)
+          .update({
+        'matriculaAlDia': true,
+        'fechaPagoMatricula': Timestamp.fromDate(fechaSeleccionada),
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '✅ Matrícula asentada con fecha ${DateFormat('dd/MM/yyyy').format(fechaSeleccionada)}',
             ),
-          ],
-        ),
-      );
+            backgroundColor: Colors.green,
+          ),
+        );
+        setState(() {});
+      }
     }
   }
 
@@ -53,8 +137,9 @@ class SocioDetallePage extends StatelessWidget {
   Widget build(BuildContext context) {
     final hoy = DateTime.now();
     final bool aptoValido =
-        socio.vencimientoAptoMedico != null &&
-        socio.vencimientoAptoMedico!.isAfter(hoy);
+        widget.socio.vencimientoAptoMedico != null &&
+        widget.socio.vencimientoAptoMedico!.isAfter(hoy);
+    final bool tieneHuellaDigital = false;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
@@ -67,11 +152,11 @@ class SocioDetallePage extends StatelessWidget {
               children: [
                 IconButton(
                   icon: const Icon(Icons.arrow_back_ios_new_rounded),
-                  onPressed: onVolver,
+                  onPressed: widget.onVolver,
                 ),
                 const SizedBox(width: 16),
                 Text(
-                  'Ficha Detallada: ${socio.nombre}',
+                  'Ficha Detallada: ${widget.socio.nombre}',
                   style: const TextStyle(
                     fontSize: 24,
                     fontWeight: FontWeight.bold,
@@ -80,16 +165,13 @@ class SocioDetallePage extends StatelessWidget {
                 ),
                 const SizedBox(width: 12),
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 4,
-                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
                     color: const Color(0xFFF1F5F9),
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
-                    'N° ${socio.numeroSocio}',
+                    'N° ${widget.socio.numeroSocio}',
                     style: const TextStyle(
                       fontSize: 14,
                       color: Colors.blueGrey,
@@ -97,42 +179,9 @@ class SocioDetallePage extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (socio.esEstudianteEscuela) ...[
-                  const SizedBox(width: 12),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.amber.shade100,
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: Colors.amber.shade300),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.school,
-                          size: 16,
-                          color: Colors.amber.shade900,
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          'Convenio Escolar (${socio.descuentoEscolarPorcentaje.toStringAsFixed(0)}% OFF)',
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: Colors.amber.shade900,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
               ],
             ),
           ),
-
           Expanded(
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(40.0),
@@ -151,36 +200,34 @@ class SocioDetallePage extends StatelessWidget {
                         padding: const EdgeInsets.all(32.0),
                         child: Column(
                           children: [
+                            // 📸 FOTO CON RECONOCIMIENTO Y CARGA SEGURA
                             CircleAvatar(
                               radius: 75,
-                              backgroundColor: Colors.teal.withValues(
-                                alpha: 0.1,
-                              ),
-                              child: socio.fotoUrl.isNotEmpty
+                              backgroundColor: Colors.teal.withOpacity(0.1),
+                              child: widget.socio.fotoUrl.isNotEmpty
                                   ? ClipRRect(
                                       borderRadius: BorderRadius.circular(75),
                                       child: Image.network(
-                                        socio.fotoUrl,
+                                        widget.socio.fotoUrl,
                                         width: 150,
                                         height: 150,
                                         fit: BoxFit.cover,
-                                        errorBuilder: (_, __, ___) =>
-                                            const Icon(
-                                              Icons.person_rounded,
-                                              size: 70,
-                                              color: Colors.teal,
-                                            ),
+                                        errorBuilder: (_, __, ___) => const Icon(
+                                          Icons.person,
+                                          size: 70,
+                                          color: Colors.teal,
+                                        ),
                                       ),
                                     )
                                   : const Icon(
-                                      Icons.person_rounded,
+                                      Icons.person,
                                       size: 70,
                                       color: Colors.teal,
                                     ),
                             ),
                             const SizedBox(height: 24),
                             Text(
-                              socio.nombre,
+                              widget.socio.nombre,
                               textAlign: TextAlign.center,
                               style: const TextStyle(
                                 fontSize: 20,
@@ -188,39 +235,66 @@ class SocioDetallePage extends StatelessWidget {
                               ),
                             ),
                             Text(
-                              'DNI ${socio.dni}',
-                              style: const TextStyle(
-                                color: Colors.grey,
-                                fontSize: 14,
-                              ),
+                              'DNI ${widget.socio.dni}',
+                              style: const TextStyle(color: Colors.grey),
                             ),
                             const SizedBox(height: 24),
                             const Divider(),
                             const SizedBox(height: 16),
 
                             _buildEstadoFicha(
-                              'Cuenta Corriente',
-                              socio.saldoCuentaCorriente < 0
-                                  ? 'Debe \$${socio.saldoCuentaCorriente.abs().toStringAsFixed(0)}'
-                                  : 'Al día',
-                              socio.saldoCuentaCorriente < 0
-                                  ? Colors.red
-                                  : Colors.green,
+                              'Matrícula Anual',
+                              widget.socio.matriculaAlDia
+                                  ? 'Al día (${widget.socio.fechaPagoMatricula != null ? DateFormat('dd/MM/yy').format(widget.socio.fechaPagoMatricula!) : 'S/D'})'
+                                  : 'PENDIENTE',
+                              widget.socio.matriculaAlDia ? Colors.green : Colors.red,
                             ),
-                            const SizedBox(height: 16),
-
+                            const SizedBox(height: 12),
+                            _buildEstadoFicha(
+                              'Último Mes Pago',
+                              widget.socio.ultimoMesPago.isNotEmpty
+                                  ? widget.socio.ultimoMesPago
+                                  : 'Sin Registros',
+                              Colors.indigo,
+                            ),
+                            const SizedBox(height: 12),
                             _buildEstadoFicha(
                               'Control Médico',
                               aptoValido ? 'Apto Vigente' : 'APTO VENCIDO',
                               aptoValido ? Colors.green : Colors.red,
                             ),
+                            const SizedBox(height: 12),
+                            _buildEstadoFicha(
+                              'Estado Cta Cte',
+                              widget.socio.saldoCuentaCorriente >= 0
+                                  ? 'Al día (\$${widget.socio.saldoCuentaCorriente.toStringAsFixed(0)})'
+                                  : 'Deuda (\$${widget.socio.saldoCuentaCorriente.abs().toStringAsFixed(0)})',
+                              widget.socio.saldoCuentaCorriente >= 0
+                                  ? Colors.green
+                                  : Colors.red,
+                            ),
+
+                            if (!widget.socio.matriculaAlDia) ...[
+                              const SizedBox(height: 20),
+                              OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: Colors.amber.shade900,
+                                  side: BorderSide(color: Colors.amber.shade400),
+                                ),
+                                icon: const Icon(
+                                  Icons.history_toggle_off_rounded,
+                                  size: 18,
+                                ),
+                                label: const Text('Indicar Pago Previo Matrícula'),
+                                onPressed: _registrarMatriculaPrevio,
+                              ),
+                            ],
                           ],
                         ),
                       ),
                     ),
                   ),
                   const SizedBox(width: 40),
-
                   Expanded(
                     flex: 2,
                     child: Container(
@@ -233,175 +307,113 @@ class SocioDetallePage extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          _buildSeccionTitulo(
-                            'Información Personal y Contacto',
-                          ),
+                          _buildSeccionTitulo('Contacto & Datos Personales'),
                           const SizedBox(height: 20),
                           Row(
                             children: [
                               _buildDatoItem(
                                 'Teléfono Móvil',
-                                socio.telefono,
-                                Icons.phone_rounded,
+                                widget.socio.telefono.isNotEmpty
+                                    ? widget.socio.telefono
+                                    : 'No registrado',
+                                Icons.phone,
                               ),
                               _buildDatoItem(
-                                'Fecha de Nacimiento',
-                                socio.fechaNacimiento != null
-                                    ? DateFormat(
-                                        'dd/MM/yyyy',
-                                      ).format(socio.fechaNacimiento!)
-                                    : 'No registrada',
-                                Icons.cake_rounded,
+                                'Contacto de Emergencia / Email',
+                                widget.socio.contactoEmergencia.isNotEmpty
+                                    ? widget.socio.contactoEmergencia
+                                    : 'Sin registrar',
+                                Icons.email_outlined,
                               ),
                             ],
                           ),
-                          const SizedBox(height: 20),
-                          Row(
-                            children: [
-                              _buildDatoItem(
-                                'Fecha de Alta en Club',
-                                DateFormat(
-                                  'dd/MM/yyyy',
-                                ).format(socio.fechaAlta),
-                                Icons.calendar_today_rounded,
-                              ),
-                              _buildDatoItem(
-                                'Estado del Socio',
-                                socio.activo ? 'Activo' : 'Inactivo',
-                                Icons.gpp_good_rounded,
-                              ),
-                            ],
-                          ),
-
-                          if (socio.esEstudianteEscuela) ...[
-                            const SizedBox(height: 32),
-                            const Divider(),
-                            const SizedBox(height: 16),
-                            _buildSeccionTitulo(
-                              'Convenio Escolar y Bonificación',
-                            ),
-                            const SizedBox(height: 20),
-                            Row(
-                              children: [
-                                _buildDatoItem(
-                                  'Institución / Colegio',
-                                  socio.colegioInstitucion ?? 'No especificada',
-                                  Icons.school_rounded,
-                                ),
-                                _buildDatoItem(
-                                  'Grado / Año',
-                                  socio.gradoAnio ?? 'No especificado',
-                                  Icons.class_rounded,
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 20),
-                            Row(
-                              children: [
-                                _buildDatoItem(
-                                  'Descuento Aplicado',
-                                  '${socio.descuentoEscolarPorcentaje.toStringAsFixed(0)}% sobre tarifa base',
-                                  Icons.percent_rounded,
-                                ),
-                              ],
-                            ),
-                          ],
-
-                          const SizedBox(height: 32),
+                          const SizedBox(height: 24),
                           const Divider(),
                           const SizedBox(height: 16),
 
-                          _buildSeccionTitulo('Área de Emergencias y Salud'),
+                          _buildSeccionTitulo('Deporte & Horarios'),
                           const SizedBox(height: 20),
-
                           Row(
                             children: [
                               _buildDatoItem(
-                                'Contacto de Emergencia',
-                                socio.contactoEmergencia.isEmpty
-                                    ? 'No provisto'
-                                    : socio.contactoEmergencia,
-                                Icons.heart_broken_rounded,
+                                'Actividad Principal',
+                                widget.socio.deporte.isNotEmpty
+                                    ? widget.socio.deporte
+                                    : 'General',
+                                Icons.sports,
+                              ),
+                              _buildDatoItem(
+                                'Frecuencia',
+                                widget.socio.frecuencia.isNotEmpty
+                                    ? widget.socio.frecuencia
+                                    : 'Pase Libre',
+                                Icons.repeat,
                               ),
                             ],
                           ),
                           const SizedBox(height: 20),
-
                           Row(
-                            crossAxisAlignment: CrossAxisAlignment.end,
                             children: [
                               _buildDatoItem(
-                                'Vencimiento de Certificado',
-                                socio.vencimientoAptoMedico != null
-                                    ? DateFormat(
-                                        'dd/MM/yyyy',
-                                      ).format(socio.vencimientoAptoMedico!)
-                                    : 'No registrado',
-                                Icons.shield_rounded,
+                                'Grado / Año Académico',
+                                (widget.socio.gradoAnio?.isNotEmpty ?? false)
+                                    ? widget.socio.gradoAnio!
+                                    : 'No aplica',
+                                Icons.school_outlined,
                               ),
-                              const SizedBox(width: 20),
+                              // 🕒 MOSTRAR TRADUCCIÓN DE HORARIOS
+                              _buildDatoItem(
+                                'Bloque Horario',
+                                _etiquetaHorarioTraduccion,
+                                Icons.schedule_rounded,
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 24),
+                          const Divider(),
+                          const SizedBox(height: 16),
+
+                          _buildSeccionTitulo('Control Médico & Biometría'),
+                          const SizedBox(height: 20),
+                          Row(
+                            children: [
+                              _buildDatoItem(
+                                'Vencimiento Apto Médico',
+                                widget.socio.vencimientoAptoMedico != null
+                                    ? DateFormat('dd/MM/yyyy').format(
+                                        widget.socio.vencimientoAptoMedico!,
+                                      )
+                                    : 'No cargado',
+                                Icons.medical_services_outlined,
+                              ),
+                              _buildDatoItem(
+                                'Huella Digital',
+                                tieneHuellaDigital
+                                    ? 'Enrolada ✅'
+                                    : 'Pendiente de Lectura ⚠️',
+                                Icons.fingerprint_rounded,
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 20),
+                          Row(
+                            children: [
                               Expanded(
-                                child: Padding(
-                                  padding: const EdgeInsets.only(bottom: 4),
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
                                   child: ElevatedButton.icon(
                                     style: ElevatedButton.styleFrom(
-                                      backgroundColor: Colors.teal.shade700,
+                                      backgroundColor: const Color(0xFF0A3B43),
                                       foregroundColor: Colors.white,
-                                      padding: const EdgeInsets.symmetric(
-                                        vertical: 18,
-                                      ),
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
                                     ),
                                     icon: const Icon(
-                                      Icons.picture_as_pdf_rounded,
+                                      Icons.file_present_rounded,
+                                      size: 18,
                                     ),
-                                    label: const Text(
-                                      'Ver Documento Adjunto',
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
+                                    label: const Text('Ver Adjunto Apto Físico'),
                                     onPressed: () => _abrirAptoMedico(context),
                                   ),
                                 ),
-                              ),
-                            ],
-                          ),
-
-                          const SizedBox(height: 32),
-                          const Divider(),
-                          const SizedBox(height: 16),
-
-                          _buildSeccionTitulo(
-                            'Inscripción y Distribución Horaria',
-                          ),
-                          const SizedBox(height: 20),
-                          Row(
-                            children: [
-                              _buildDatoItem(
-                                'Actividad / Deporte',
-                                socio.deporte,
-                                Icons.sports_rounded,
-                              ),
-                              _buildDatoItem(
-                                'Frecuencia Semanal',
-                                socio.frecuencia,
-                                Icons.loop_rounded,
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 20),
-
-                          Row(
-                            children: [
-                              _buildDatoItem(
-                                'Días Asignados',
-                                socio.dias.isEmpty
-                                    ? 'Ninguno seleccionado'
-                                    : socio.dias.join(' - '),
-                                Icons.calendar_month_rounded,
                               ),
                             ],
                           ),
@@ -418,81 +430,53 @@ class SocioDetallePage extends StatelessWidget {
     );
   }
 
-  Widget _buildSeccionTitulo(String titulo) {
-    return Text(
-      titulo,
-      style: const TextStyle(
-        fontSize: 16,
-        fontWeight: FontWeight.bold,
-        color: Colors.blueAccent,
-        letterSpacing: 0.5,
-      ),
-    );
-  }
+  Widget _buildSeccionTitulo(String t) => Text(
+        t,
+        style: const TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.bold,
+          color: Color(0xFF0A3B43),
+        ),
+      );
 
-  Widget _buildDatoItem(String etiqueta, String valor, IconData icono) {
-    return Expanded(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            etiqueta,
-            style: const TextStyle(
-              fontSize: 12,
-              color: Colors.grey,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Row(
-            children: [
-              Icon(icono, size: 18, color: Colors.blueGrey.shade400),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  valor,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFF1E293B),
+  Widget _buildDatoItem(String e, String v, IconData i) => Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(e, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                Icon(i, size: 18, color: Colors.blueGrey),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    v,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  overflow: TextOverflow.ellipsis,
                 ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
+              ],
+            ),
+          ],
+        ),
+      );
 
-  Widget _buildEstadoFicha(String titulo, String valor, Color color) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6.0),
-      child: Row(
+  Widget _buildEstadoFicha(String t, String v, Color c) => Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(
-            titulo,
-            style: const TextStyle(fontSize: 13, color: Colors.blueGrey),
-          ),
+          Text(t, style: const TextStyle(fontSize: 13, color: Colors.blueGrey)),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.1),
+              color: c.withOpacity(0.1),
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
-              valor,
-              style: TextStyle(
-                color: color,
-                fontWeight: FontWeight.bold,
-                fontSize: 13,
-              ),
+              v,
+              style: TextStyle(color: c, fontWeight: FontWeight.bold, fontSize: 12),
             ),
           ),
         ],
-      ),
-    );
-  }
+      );
 }

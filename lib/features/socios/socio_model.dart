@@ -21,6 +21,13 @@ class SocioModel {
   final String idBloqueHorario;
   final double saldoCuentaCorriente;
 
+  // 🏷️ CONTROL DE MATRÍCULA Y LÍNEA TEMPORAL DE PAGOS
+  final bool matriculaAlDia;
+  final DateTime? fechaPagoMatricula;
+  final String ultimoMesPago; // Ej: "2026-07" o "Agosto 2026"
+  final String? mesesCubiertosHasta; // 👈 NUEVO: "2026-11" para promociones
+  final String huellaHash; // 👈 NUEVO: Hash biométrico
+
   // 🏫 CONVENIO / ARANCEL ESCOLAR
   final bool esEstudianteEscuela;
   final String? colegioInstitucion;
@@ -45,6 +52,11 @@ class SocioModel {
     required this.dias,
     required this.idBloqueHorario,
     required this.saldoCuentaCorriente,
+    this.matriculaAlDia = false,
+    this.fechaPagoMatricula,
+    this.ultimoMesPago = 'Sin Registros',
+    this.mesesCubiertosHasta,
+    this.huellaHash = '',
     this.esEstudianteEscuela = false,
     this.colegioInstitucion,
     this.gradoAnio,
@@ -52,9 +64,8 @@ class SocioModel {
   });
 
   factory SocioModel.fromFirestore(DocumentSnapshot doc) {
-    Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+    Map<String, dynamic> data = doc.data() as Map<String, dynamic>? ?? {};
 
-    // 💡 Helper interno para parsear fechas de forma ultra segura (Timestamp o String)
     DateTime? parseFecha(dynamic valor) {
       if (valor == null) return null;
       if (valor is Timestamp) return valor.toDate();
@@ -64,7 +75,6 @@ class SocioModel {
 
     return SocioModel(
       id: doc.id,
-      // 💡 Convertimos .toString() para evitar choque entre int y String
       numeroSocio: data['numeroSocio']?.toString() ?? doc.id,
       nombre: data['nombre']?.toString() ?? '',
       dni: data['dni']?.toString() ?? '',
@@ -83,7 +93,12 @@ class SocioModel {
       saldoCuentaCorriente:
           (data['saldoCuentaCorriente'] as num?)?.toDouble() ?? 0.0,
 
-      // Mapeo escolar
+      matriculaAlDia: data['matriculaAlDia'] == true,
+      fechaPagoMatricula: parseFecha(data['fechaPagoMatricula']),
+      ultimoMesPago: data['ultimoMesPago']?.toString() ?? 'Sin Registros',
+      mesesCubiertosHasta: data['mesesCubiertosHasta']?.toString(),
+      huellaHash: data['huellaHash']?.toString() ?? '',
+
       esEstudianteEscuela: data['esEstudianteEscuela'] == true,
       colegioInstitucion: data['colegioInstitucion']?.toString(),
       gradoAnio: data['gradoAnio']?.toString(),
@@ -114,6 +129,13 @@ class SocioModel {
       'dias': dias,
       'idBloqueHorario': idBloqueHorario,
       'saldoCuentaCorriente': saldoCuentaCorriente,
+      'matriculaAlDia': matriculaAlDia,
+      'fechaPagoMatricula': fechaPagoMatricula != null
+          ? Timestamp.fromDate(fechaPagoMatricula!)
+          : null,
+      'ultimoMesPago': ultimoMesPago,
+      'mesesCubiertosHasta': mesesCubiertosHasta,
+      'huellaHash': huellaHash,
       'esEstudianteEscuela': esEstudianteEscuela,
       'colegioInstitucion': colegioInstitucion,
       'gradoAnio': gradoAnio,

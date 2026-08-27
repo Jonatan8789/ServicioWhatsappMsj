@@ -1,5 +1,6 @@
 const { setGlobalOptions } = require("firebase-functions");
-const { onRequest } = require("firebase-functions/https");
+const { onRequest } = require("firebase-functions/v2/https");
+const { onSchedule } = require("firebase-functions/v2/scheduler"); // 👈 Importamos onSchedule para v2
 const logger = require("firebase-functions/logger");
 
 setGlobalOptions({ maxInstances: 10 });
@@ -8,7 +9,7 @@ const functions = require('firebase-functions');
 const admin = require('firebase-admin');
 const Afip = require('@afipsdk/afip.js');
 const axios = require('axios');
-const cheerio = require('cheerio'); // Requiere: npm install cheerio
+const cheerio = require('cheerio');
 
 if (!admin.apps.length) {
     admin.initializeApp();
@@ -18,13 +19,13 @@ if (!admin.apps.length) {
 // SINCRONIZACIÓN CON PADEL MANAGER (AUTOMÁTICA & MANUAL)
 // =========================================================================
 
-// ⏰ Sincronización automática programada (Todos los lunes 03:00 AM)
-exports.sincronizarRankingPadelManager = functions.pubsub
-  .schedule('0 3 * * 1')
-  .timeZone('America/Argentina/Buenos_Aires')
-  .onRun(async (context) => {
-    return await ejecutarSincronizacionPadelManager();
-  });
+// ⏰ Sincronización automática programada (Todos los lunes 03:00 AM - Sintaxis v2)
+exports.sincronizarRankingPadelManager = onSchedule({
+  schedule: '0 3 * * 1',
+  timeZone: 'America/Argentina/Buenos_Aires',
+}, async (event) => {
+  return await ejecutarSincronizacionPadelManager();
+});
 
 // 🚀 Endpoint HTTP para sincronización bajo demanda desde Flutter
 exports.sincronizarRankingManual = functions.https.onRequest(async (req, res) => {

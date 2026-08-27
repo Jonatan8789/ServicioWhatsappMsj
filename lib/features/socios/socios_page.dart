@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:intl/intl.dart';
 import 'socio_model.dart';
 import '../cuentas_corrientes/cuenta_corriente_page.dart';
-import '../../pages/plan_pago_dialog.dart'; // 👈 Import de la ventana de Refinanciación
+import '../../pages/plan_pago_dialog.dart';
 
 class SociosPage extends StatefulWidget {
   final String rolUsuario;
@@ -171,7 +172,7 @@ class _SociosPageState extends State<SociosPage> {
                         ),
                         leading: CircleAvatar(
                           radius: 24,
-                          backgroundColor: Colors.teal.withValues(alpha: 0.1),
+                          backgroundColor: Colors.teal.withOpacity(0.1),
                           child: socio.fotoUrl.isNotEmpty
                               ? ClipRRect(
                                   borderRadius: BorderRadius.circular(24),
@@ -244,30 +245,82 @@ class _SociosPageState extends State<SociosPage> {
                           ],
                         ),
                         subtitle: Padding(
-                          padding: const EdgeInsets.only(top: 4.0),
-                          child: Row(
+                          padding: const EdgeInsets.only(top: 6.0),
+                          child: Wrap(
+                            spacing: 12,
+                            runSpacing: 4,
                             children: [
                               Text('${socio.deporte} • DNI: ${socio.dni}'),
-                              const SizedBox(width: 16),
-                              Icon(
-                                Icons.favorite,
-                                size: 14,
-                                color: aptoValido ? Colors.green : Colors.red,
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.favorite,
+                                    size: 14,
+                                    color: aptoValido
+                                        ? Colors.green
+                                        : Colors.red,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    aptoValido
+                                        ? 'Apto Médico al día'
+                                        : 'APTO VENCIDO',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: aptoValido
+                                          ? Colors.green.shade700
+                                          : Colors.red.shade700,
+                                      fontWeight: aptoValido
+                                          ? FontWeight.normal
+                                          : FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
                               ),
-                              const SizedBox(width: 4),
-                              Text(
-                                aptoValido
-                                    ? 'Apto Médico al día'
-                                    : 'APTO VENCIDO',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: aptoValido
-                                      ? Colors.green.shade700
-                                      : Colors.red.shade700,
-                                  fontWeight: aptoValido
-                                      ? FontWeight.normal
-                                      : FontWeight.bold,
-                                ),
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.badge_outlined,
+                                    size: 14,
+                                    color: socio.matriculaAlDia
+                                        ? Colors.green
+                                        : Colors.orange.shade800,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    socio.matriculaAlDia
+                                        ? 'Matrícula Al Día (${socio.fechaPagoMatricula != null ? DateFormat('dd/MM/yy').format(socio.fechaPagoMatricula!) : 'OK'})'
+                                        : 'MATRÍCULA PENDIENTE',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                      color: socio.matriculaAlDia
+                                          ? Colors.green.shade800
+                                          : Colors.orange.shade900,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(
+                                    Icons.event_available,
+                                    size: 14,
+                                    color: Colors.indigo,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    'Último pago: ${socio.ultimoMesPago}',
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: Colors.indigo,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ],
                           ),
@@ -282,8 +335,8 @@ class _SociosPageState extends State<SociosPage> {
                               ),
                               decoration: BoxDecoration(
                                 color: tieneDeuda
-                                    ? Colors.red.withValues(alpha: 0.1)
-                                    : Colors.green.withValues(alpha: 0.1),
+                                    ? Colors.red.withOpacity(0.1)
+                                    : Colors.green.withOpacity(0.1),
                                 borderRadius: BorderRadius.circular(20),
                               ),
                               child: Text(

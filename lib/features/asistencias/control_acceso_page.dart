@@ -14,16 +14,40 @@ class ControlAccesoPage extends StatefulWidget {
 class _ControlAccesoPageState extends State<ControlAccesoPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final TextEditingController _busquedaController = TextEditingController();
+  final FocusNode _lectorFocusNode = FocusNode();
 
   Map<String, dynamic>? _socioEncontrado;
   String? _socioIdEncontrado;
   bool _buscando = false;
 
-  // Modales y estados de autorización
+  // Estados de autorización
   bool _cuotaAlDia = false;
   bool _aptoMedicoVigente = false;
+  bool _matriculaAlDia = false;
   bool _estadoHabilitado = false;
   double _saldoCuentaCorriente = 0.0;
+
+  // Control de Clases del Mes Calendario
+  String _frecuenciaPase = 'Pase Libre';
+  int _limiteClasesMes = 999;
+  int _clasesUsadasMes = 0;
+  int _creditosRestantes = 999;
+  bool _tieneCreditoDisponible = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _lectorFocusNode.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _lectorFocusNode.dispose();
+    _busquedaController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -38,37 +62,44 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
         foregroundColor: Colors.white,
         elevation: 0,
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(24.0),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 🔍 PANEL IZQUIERDO: BÚSQUEDA / LECTOR Y VALIDACIÓN
-            Expanded(
-              flex: 5,
-              child: Column(
-                children: [
-                  _buildTarjetaLector(),
-                  const SizedBox(height: 20),
-                  Expanded(
-                    child: _socioEncontrado == null
-                        ? _buildEstadoInicialLector()
-                        : _buildFichaValidacionSocio(),
-                  ),
-                ],
+      body: KeyboardListener(
+        focusNode: _lectorFocusNode,
+        onKeyEvent: (event) {
+          if (!_lectorFocusNode.hasFocus) {
+            _busquedaController.selection = TextSelection.fromPosition(
+              TextPosition(offset: _busquedaController.text.length),
+            );
+            _lectorFocusNode.requestFocus();
+          }
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                flex: 5,
+                child: Column(
+                  children: [
+                    _buildTarjetaLector(),
+                    const SizedBox(height: 20),
+                    Expanded(
+                      child: _socioEncontrado == null
+                          ? _buildEstadoInicialLector()
+                          : _buildFichaValidacionSocio(),
+                    ),
+                  ],
+                ),
               ),
-            ),
-            const SizedBox(width: 24),
-
-            // 📋 PANEL DERECHO: MONITOR DE INGRESOS EN TIEMPO REAL (HISTORIAL DEL DÍA)
-            Expanded(flex: 4, child: _buildMonitorIngresosHoy()),
-          ],
+              const SizedBox(width: 24),
+              Expanded(flex: 4, child: _buildMonitorIngresosHoy()),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  // 📡 CARD 1: INPUT DE ENTRADA (HUELLA / LECTOR / DNI)
   Widget _buildTarjetaLector() {
     return Container(
       padding: const EdgeInsets.all(20),
@@ -92,10 +123,10 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
               autofocus: true,
               style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               decoration: const InputDecoration(
-                hintText: 'Escanee Huella, QR o ingrese N° DNI / Socio...',
+                hintText: 'Escanee Huella DigitalPersona, QR o DNI...',
                 border: InputBorder.none,
               ),
-              onSubmitted: (val) => _buscarSocio(val),
+              onSubmitted: (val) => _procesarEntradaLector(val),
             ),
           ),
           if (_buscando)
@@ -112,7 +143,7 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
                   borderRadius: BorderRadius.circular(10),
                 ),
               ),
-              onPressed: () => _buscarSocio(_busquedaController.text),
+              onPressed: () => _procesarEntradaLector(_busquedaController.text),
               icon: const Icon(Icons.search, color: Colors.white),
               label: const Text(
                 'Validar',
@@ -150,7 +181,7 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
           ),
           SizedBox(height: 8),
           Text(
-            'Pase la tarjeta o ingrese el DNI del socio para verificar estado.',
+            'Lector unificado: Valida socios y fichaje de profesores.',
             style: TextStyle(color: Colors.grey),
           ),
         ],
@@ -158,10 +189,10 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
     );
   }
 
-  // 🎴 FICHA COMPLETA DE VALIDACIÓN CON SEMÁFORO Y DETALLE DE SALDO
   Widget _buildFichaValidacionSocio() {
     final String nombre =
-        '${_socioEncontrado!['nombre'] ?? ''} ${_socioEncontrado!['apellido'] ?? ''}';
+        '${_socioEncontrado!['nombre'] ?? ''} ${_socioEncontrado!['apellido'] ?? ''}'
+            .trim();
     final String dni = _socioEncontrado!['dni'] ?? '-';
     final String fotoUrl = _socioEncontrado!['fotoUrl'] ?? '';
 
@@ -170,10 +201,13 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
         ? 'ACCESO HABILITADO'
         : 'ACCESO DENEGADO';
 
-    // Formateo del estado de cuota
     String detalleCuota = _cuotaAlDia
-        ? 'Al Día (\$${_saldoCuentaCorriente.toStringAsFixed(0)})'
+        ? 'Al Día'
         : 'Deuda: \$${_saldoCuentaCorriente.abs().toStringAsFixed(0)}';
+
+    String detalleCredito = _limiteClasesMes == 999
+        ? 'Pase Libre'
+        : 'Quedan $_creditosRestantes de $_limiteClasesMes clases';
 
     return Container(
       padding: const EdgeInsets.all(24),
@@ -184,7 +218,6 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
       ),
       child: Column(
         children: [
-          // CABECERA DEL SEMÁFORO
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(vertical: 12),
@@ -204,7 +237,6 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
           ),
           const SizedBox(height: 20),
 
-          // FOTO Y DATOS PERSONALES
           Row(
             children: [
               CircleAvatar(
@@ -234,7 +266,7 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
                       style: const TextStyle(color: Colors.grey, fontSize: 15),
                     ),
                     Text(
-                      'Actividad: ${_socioEncontrado!['deporte'] ?? 'General'}',
+                      'Programa: ${_socioEncontrado!['deporte'] ?? 'General'} ($_frecuenciaPase)',
                       style: const TextStyle(
                         fontWeight: FontWeight.w600,
                         color: Colors.teal,
@@ -245,23 +277,33 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
               ),
             ],
           ),
-          const Divider(height: 32),
+          const Divider(height: 28),
 
-          // GRILLA DE CHEQUEO TÉCNICO (CON SALDO EN CUENTA CORRIENTE)
           Row(
             children: [
               _buildItemRegla('Estado Financiero', _cuotaAlDia, detalleCuota),
-              const SizedBox(width: 16),
+              const SizedBox(width: 8),
               _buildItemRegla(
                 'Apto Médico',
                 _aptoMedicoVigente,
-                _aptoMedicoVigente ? 'Vigente' : 'Vencido / Sin Apto',
+                _aptoMedicoVigente ? 'Vigente' : 'Vencido',
+              ),
+              const SizedBox(width: 8),
+              _buildItemRegla(
+                'Crédito Clases',
+                _tieneCreditoDisponible,
+                detalleCredito,
+              ),
+              const SizedBox(width: 8),
+              _buildItemRegla(
+                'Matrícula',
+                _matriculaAlDia,
+                _matriculaAlDia ? 'Al Día' : 'Pendiente',
               ),
             ],
           ),
           const Spacer(),
 
-          // BOTONES DE ACCIÓN (MARCACIÓN AUTOMÁTICA O BYPASS MANUAL)
           Row(
             children: [
               if (_estadoHabilitado)
@@ -281,9 +323,9 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
                     ),
                     icon: const Icon(Icons.check_circle_rounded, size: 24),
                     label: const Text(
-                      'REGISTRAR INGRESO',
+                      'REGISTRAR INGRESO Y DESCONTAR CLASE',
                       style: TextStyle(
-                        fontSize: 16,
+                        fontSize: 15,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -292,7 +334,7 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
               else
                 Expanded(
                   child: OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
+                    style: ElevatedButton.styleFrom(
                       foregroundColor: Colors.orange.shade800,
                       side: BorderSide(color: Colors.orange.shade800, width: 2),
                       padding: const EdgeInsets.symmetric(vertical: 18),
@@ -325,7 +367,7 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
     Color color = cumple ? Colors.green : Colors.red;
     return Expanded(
       child: Container(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(
           color: color.withValues(alpha: 0.05),
           borderRadius: BorderRadius.circular(10),
@@ -336,9 +378,9 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
             Icon(
               cumple ? Icons.check_circle : Icons.cancel,
               color: color,
-              size: 28,
+              size: 24,
             ),
-            const SizedBox(width: 10),
+            const SizedBox(width: 8),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -347,7 +389,7 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
                     titulo,
                     style: const TextStyle(
                       fontWeight: FontWeight.bold,
-                      fontSize: 13,
+                      fontSize: 12,
                     ),
                   ),
                   Text(
@@ -355,7 +397,7 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
                     style: TextStyle(
                       color: color,
                       fontWeight: FontWeight.w700,
-                      fontSize: 12,
+                      fontSize: 11,
                     ),
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -368,7 +410,6 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
     );
   }
 
-  // 📺 MONITOR DERECHO: HISTORIAL EN TIEMPO REAL
   Widget _buildMonitorIngresosHoy() {
     final DateTime hoy = DateTime.now();
     final String hoyStr =
@@ -386,7 +427,7 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 const Text(
-                  'Ingresos de Hoy',
+                  'Monitor Acceso en Vivo',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 Chip(
@@ -403,8 +444,9 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
                     .where('fechaStr', isEqualTo: hoyStr)
                     .snapshots(),
                 builder: (context, snapshot) {
-                  if (!snapshot.hasData)
+                  if (!snapshot.hasData) {
                     return const Center(child: CircularProgressIndicator());
+                  }
                   final docs = snapshot.data!.docs;
 
                   if (docs.isEmpty) {
@@ -422,36 +464,47 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
                           .toDate();
                       final bool esExcepcion =
                           data['modo'] == 'EXCEPCION_MANUAL';
+                      final bool esProfesor = data['tipoEntidad'] == 'Profesor';
 
                       return ListTile(
                         dense: true,
                         contentPadding: EdgeInsets.zero,
                         leading: CircleAvatar(
-                          backgroundColor: esExcepcion
-                              ? Colors.orange.shade100
-                              : Colors.green.shade100,
+                          backgroundColor: esProfesor
+                              ? Colors.purple.shade100
+                              : (esExcepcion
+                                    ? Colors.orange.shade100
+                                    : Colors.green.shade100),
                           child: Icon(
-                            esExcepcion
-                                ? Icons.warning_rounded
-                                : Icons.check_rounded,
-                            color: esExcepcion
-                                ? Colors.orange.shade900
-                                : Colors.green.shade900,
+                            esProfesor
+                                ? Icons.badge
+                                : (esExcepcion
+                                      ? Icons.warning_rounded
+                                      : Icons.check_rounded),
+                            color: esProfesor
+                                ? Colors.purple.shade900
+                                : (esExcepcion
+                                      ? Colors.orange.shade900
+                                      : Colors.green.shade900),
                             size: 20,
                           ),
                         ),
                         title: Text(
-                          data['nombreSocio'] ?? 'Socio',
+                          data['nombreSocio'] ?? 'Usuario',
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
                         subtitle: Text(
-                          esExcepcion
-                              ? 'Excepción: ${data['motivoExcepcion']}'
-                              : 'Validación Automática',
+                          esProfesor
+                              ? 'Fichaje Docente (${data['tipoFichajeProfe'] ?? 'Ingreso'})'
+                              : (esExcepcion
+                                    ? 'Excepción: ${data['motivoExcepcion']}'
+                                    : 'Acceso OK • Quedan: ${data['creditosRestantes'] ?? 'Libre'}'),
                           style: TextStyle(
-                            color: esExcepcion
-                                ? Colors.orange.shade800
-                                : Colors.grey,
+                            color: esProfesor
+                                ? Colors.purple.shade800
+                                : (esExcepcion
+                                      ? Colors.orange.shade800
+                                      : Colors.grey),
                           ),
                         ),
                         trailing: Text(
@@ -473,55 +526,127 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
     );
   }
 
-  // 🔍 LÓGICA DE BÚSQUEDA Y EVALUACIÓN DE REGLAS (ADAPTADA A SOCIO_MODEL)
-  Future<void> _buscarSocio(String query) async {
+  Future<void> _procesarEntradaLector(String query) async {
     final String codigoLeido = query.trim();
     if (codigoLeido.isEmpty) return;
     setState(() => _buscando = true);
 
     try {
-      // 1. Buscar por DNI
-      var snap = await _firestore
+      final profeSnap = await _firestore
+          .collection('profesores')
+          .where('dni', isEqualTo: codigoLeido)
+          .limit(1)
+          .get();
+
+      if (profeSnap.docs.isNotEmpty) {
+        final docProfe = profeSnap.docs.first;
+        final dataProfe = docProfe.data();
+        await _ficharProfesor(docProfe.id, dataProfe['nombre'] ?? 'Profesor');
+        return;
+      }
+
+      var snapSocio = await _firestore
           .collection('socios')
           .where('dni', isEqualTo: codigoLeido)
           .limit(1)
           .get();
 
-      // 2. Si no es DNI, buscar por Hash Biométrico de la huella
-      if (snap.docs.isEmpty) {
-        snap = await _firestore
+      if (snapSocio.docs.isEmpty) {
+        snapSocio = await _firestore
             .collection('socios')
             .where('huellaHash', isEqualTo: codigoLeido)
             .limit(1)
             .get();
       }
 
-      if (snap.docs.isNotEmpty) {
-        final doc = snap.docs.first;
+      if (snapSocio.docs.isNotEmpty) {
+        final doc = snapSocio.docs.first;
         final data = doc.data();
+        final String socioId = doc.id;
 
-        // 💵 EVALUACIÓN DE CUOTA: Usa saldoCuentaCorriente (>= 0 es al día)
+        final hoy = DateTime.now();
+        final periodoActualStr =
+            "${hoy.year}-${hoy.month.toString().padLeft(2, '0')}";
+
+        // 🌟 EVALUACIÓN DE COBERTURA MULTIMES / PROMOCIÓN
+        final String? cubiertoHasta = data['mesesCubiertosHasta']?.toString();
+        bool promoVigente = false;
+        if (cubiertoHasta != null &&
+            cubiertoHasta.compareTo(periodoActualStr) >= 0) {
+          promoVigente = true;
+        }
+
         final double saldo = (data['saldoCuentaCorriente'] ?? 0.0).toDouble();
-        bool cuota = saldo >= 0;
+        bool cuota =
+            saldo >= 0 || promoVigente; // 👈 Habilitado si promo está activa
+        bool matricula = data['matriculaAlDia'] == true;
 
-        // 🏥 EVALUACIÓN DE APTO MÉDICO: Usa vencimientoAptoMedico
         bool apto = false;
         if (data['vencimientoAptoMedico'] != null) {
           DateTime vencApto = (data['vencimientoAptoMedico'] as Timestamp)
               .toDate();
-          apto = vencApto.isAfter(DateTime.now());
+          apto = vencApto.isAfter(hoy);
         }
 
+        final String frecuenciaRaw = (data['frecuencia'] ?? 'Pase Libre')
+            .toString()
+            .toLowerCase();
+        int limite = 999;
+
+        if (frecuenciaRaw.contains('1') || frecuenciaRaw.contains('una')) {
+          limite = 4;
+        } else if (frecuenciaRaw.contains('2') ||
+            frecuenciaRaw.contains('dos')) {
+          limite = 8;
+        } else if (frecuenciaRaw.contains('3') ||
+            frecuenciaRaw.contains('tres')) {
+          limite = 12;
+        } else if (frecuenciaRaw.contains('4') ||
+            frecuenciaRaw.contains('cuatro')) {
+          limite = 16;
+        } else if (frecuenciaRaw.contains('libre')) {
+          limite = 999;
+        }
+
+        final docCreditoRef = _firestore
+            .collection('socios')
+            .doc(socioId)
+            .collection('creditos_mensuales')
+            .doc(periodoActualStr);
+
+        final docCredito = await docCreditoRef.get();
+        int usadas = 0;
+
+        if (!docCredito.exists) {
+          await docCreditoRef.set({
+            'periodo': periodoActualStr,
+            'clasesUsadas': 0,
+            'limiteClases': limite,
+            'fechaInicio': DateTime.now(),
+          });
+        } else {
+          usadas = (docCredito.data()?['clasesUsadas'] as num?)?.toInt() ?? 0;
+        }
+
+        int restantes = limite == 999 ? 999 : (limite - usadas);
+        bool tieneCredito = limite == 999 || restantes > 0;
+        bool accesoPermitido = cuota && apto && tieneCredito;
+
         setState(() {
-          _socioIdEncontrado = doc.id;
+          _socioIdEncontrado = socioId;
           _socioEncontrado = data;
           _saldoCuentaCorriente = saldo;
           _cuotaAlDia = cuota;
+          _matriculaAlDia = matricula;
           _aptoMedicoVigente = apto;
-          _estadoHabilitado = cuota && apto;
+          _frecuenciaPase = data['frecuencia'] ?? 'Pase Libre';
+          _limiteClasesMes = limite;
+          _clasesUsadasMes = usadas;
+          _creditosRestantes = restantes;
+          _tieneCreditoDisponible = tieneCredito;
+          _estadoHabilitado = accesoPermitido;
         });
       } else {
-        // 🟡 NO HUBO COINCIDENCIA -> OFRECER VINCULAR HUELLA
         _ofrecerEnrolamientoHuella(codigoLeido);
       }
     } catch (e) {
@@ -533,7 +658,56 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
     }
   }
 
-  // 🖐️ DIÁLOGO DE ENROLAMIENTO EN CALIENTE
+  Future<void> _ficharProfesor(String profesorId, String nombreProfesor) async {
+    final hoy = DateTime.now();
+    final inicioHoy = DateTime(hoy.year, hoy.month, hoy.day);
+    final String hoyStr =
+        "${hoy.year}-${hoy.month.toString().padLeft(2, '0')}-${hoy.day.toString().padLeft(2, '0')}";
+
+    final queryAbierto = await _firestore
+        .collection('asistencia')
+        .where('profesorId', isEqualTo: profesorId)
+        .where('fecha', isGreaterThanOrEqualTo: inicioHoy)
+        .where('tipo', isEqualTo: 'Entrada')
+        .get();
+
+    String tipoFichaje = 'Entrada';
+    if (queryAbierto.docs.isNotEmpty) {
+      tipoFichaje = 'Salida';
+    }
+
+    final idRegistro = "${hoyStr}_${profesorId}_$tipoFichaje";
+
+    await _firestore.collection('asistencia').doc(idRegistro).set({
+      'profesorId': profesorId,
+      'nombreProfesor': nombreProfesor,
+      'fecha': Timestamp.fromDate(hoy),
+      'tipo': tipoFichaje,
+      'hora':
+          "${hoy.hour.toString().padLeft(2, '0')}:${hoy.minute.toString().padLeft(2, '0')}",
+    });
+
+    await _firestore.collection('asistencias_accesos').add({
+      'socioId': profesorId,
+      'nombreSocio': '[DOCENTE] $nombreProfesor',
+      'fechaHora': Timestamp.fromDate(hoy),
+      'fechaStr': hoyStr,
+      'modo': 'DOCENTE',
+      'tipoEntidad': 'Profesor',
+      'tipoFichajeProfe': tipoFichaje,
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('✅ $tipoFichaje registrada para $nombreProfesor'),
+        backgroundColor: Colors.purple.shade800,
+      ),
+    );
+
+    _busquedaController.clear();
+    setState(() => _socioEncontrado = null);
+  }
+
   void _ofrecerEnrolamientoHuella(String huellaHashCapturada) {
     final TextEditingController filtroSocioCtrl = TextEditingController();
     Map<String, dynamic>? socioSeleccionado;
@@ -551,7 +725,7 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
               children: [
                 Icon(Icons.fingerprint_rounded, color: Colors.orange, size: 28),
                 SizedBox(width: 10),
-                Text('Huella no reconocida'),
+                Text('Huella DigitalPersona no vinculada'),
               ],
             ),
             content: SizedBox(
@@ -561,14 +735,14 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'La huella o código leído no está asignado a ningún socio. ¿Deseas vincularlo ahora a la ficha de un socio existente?',
+                    'La huella leída no está asignada a ningún socio. ¿Deseas vincularla?',
                     style: TextStyle(color: Colors.blueGrey, fontSize: 13),
                   ),
                   const SizedBox(height: 16),
                   TextField(
                     controller: filtroSocioCtrl,
                     decoration: const InputDecoration(
-                      labelText: 'Buscar Socio por N° de DNI...',
+                      labelText: 'Buscar por N° de DNI...',
                       prefixIcon: Icon(Icons.search),
                       border: OutlineInputBorder(),
                       isDense: true,
@@ -606,10 +780,7 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
                       ),
                       child: Row(
                         children: [
-                          const Icon(
-                            Icons.check_circle_rounded,
-                            color: Colors.teal,
-                          ),
+                          const Icon(Icons.check_circle, color: Colors.teal),
                           const SizedBox(width: 10),
                           Expanded(
                             child: Column(
@@ -637,7 +808,7 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
                   Navigator.pop(dialogCtx);
                   _busquedaController.clear();
                 },
-                child: const Text('Cancelar / Ignorar'),
+                child: const Text('Cancelar'),
               ),
               ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(
@@ -660,17 +831,15 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
                           Navigator.pop(dialogCtx);
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
-                              content: Text(
-                                '¡Huella vinculada con éxito a ${socioSeleccionado!['nombre']}!',
-                              ),
+                              content: Text('¡Huella vinculada con éxito!'),
                               backgroundColor: Colors.green,
                             ),
                           );
-                          _buscarSocio(huellaHashCapturada);
+                          _procesarEntradaLector(huellaHashCapturada);
                         }
                       },
                 icon: const Icon(Icons.save_rounded, size: 18),
-                label: const Text('Vincular y Dar Ingreso'),
+                label: const Text('Vincular y Procesar'),
               ),
             ],
           );
@@ -679,7 +848,6 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
     );
   }
 
-  // ✍️ REGISTRO DE ASISTENCIA
   Future<void> _registrarIngreso({
     required String modo,
     required String motivoExcepcion,
@@ -689,36 +857,48 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
     final DateTime ahora = DateTime.now();
     final String hoyStr =
         "${ahora.year}-${ahora.month.toString().padLeft(2, '0')}-${ahora.day.toString().padLeft(2, '0')}";
+    final String periodoClave =
+        "${ahora.year}-${ahora.month.toString().padLeft(2, '0')}";
+
+    if (_limiteClasesMes != 999 && modo == 'AUTOMATICO') {
+      final docCreditoRef = _firestore
+          .collection('socios')
+          .doc(_socioIdEncontrado!)
+          .collection('creditos_mensuales')
+          .doc(periodoClave);
+
+      await docCreditoRef.update({'clasesUsadas': FieldValue.increment(1)});
+    }
 
     await _firestore.collection('asistencias_accesos').add({
       'socioId': _socioIdEncontrado,
       'nombreSocio':
-          '${_socioEncontrado!['nombre']} ${_socioEncontrado!['apellido'] ?? ''}',
+          '${_socioEncontrado!['nombre']} ${_socioEncontrado!['apellido'] ?? ''}'
+              .trim(),
       'dniSocio': _socioEncontrado!['dni'],
       'fechaHora': Timestamp.fromDate(ahora),
       'fechaStr': hoyStr,
       'modo': modo,
       'motivoExcepcion': motivoExcepcion,
+      'creditosRestantes': _limiteClasesMes == 999
+          ? 'Libre'
+          : '${_creditosRestantes - 1}/$_limiteClasesMes',
       'operador': widget.rolUsuario,
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(
-          'Ingreso registrado correctamente para ${_socioEncontrado!['nombre']}',
-        ),
+        content: Text('✅ Ingreso asentado para ${_socioEncontrado!['nombre']}'),
         backgroundColor: Colors.green,
       ),
     );
 
-    // Limpiar pantalla para la siguiente lectura
     setState(() {
       _socioEncontrado = null;
       _busquedaController.clear();
     });
   }
 
-  // 🔓 DIÁLOGO DE BYPASS MANUAL
   void _solicitarBypassManual(BuildContext context) {
     final TextEditingController motivoCtrl = TextEditingController();
 
@@ -731,16 +911,15 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Está por autorizar el ingreso a un socio no habilitado por reglas automáticas.',
+              'Autorizar ingreso excepcional para socio no habilitado.',
               style: TextStyle(fontSize: 13),
             ),
             const SizedBox(height: 12),
             TextField(
               controller: motivoCtrl,
               decoration: const InputDecoration(
-                labelText: 'Motivo de la excepción (Obligatorio)',
-                hintText:
-                    'Ej: Trajo certificado físico / Pagó en efectivo recién',
+                labelText: 'Motivo de la excepción',
+                hintText: 'Ej: Regularizó recién / Apto en trámite',
                 border: OutlineInputBorder(),
               ),
             ),

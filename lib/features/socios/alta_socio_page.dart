@@ -118,12 +118,6 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error al cargar configuración: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
         setState(() => _cargandoConfig = false);
       }
     }
@@ -184,20 +178,76 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
     }
   }
 
+  // 📣 DIÁLOGO DE NOTIFICACIÓN CON EL NÚMERO DE SOCIO ASIGNADO
+  void _mostrarConfirmacionSocio(String numeroSocio, String nombreSocio) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.check_circle_rounded, color: Colors.green, size: 28),
+            SizedBox(width: 10),
+            Text('¡Alta Exitosa!'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'El socio $nombreSocio ha sido registrado correctamente.',
+              style: const TextStyle(fontSize: 15),
+            ),
+            const SizedBox(height: 20),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.teal.shade50,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.teal.shade200),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.badge_rounded, color: Colors.teal),
+                  const SizedBox(width: 10),
+                  Text(
+                    'Número Asignado: N° $numeroSocio',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.teal.shade900,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1E293B),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            onPressed: () {
+              Navigator.pop(ctx);
+              widget.onVolver();
+            },
+            child: const Text('Entendido'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _guardarSocio() async {
     if (!_formKey.currentState!.validate()) return;
-
-    if (_deporteSeleccionado == null ||
-        _frecuenciaSeleccionada == null ||
-        _bloqueHorarioSeleccionadoId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Por favor completa las asignaciones del club'),
-          backgroundColor: Colors.orange,
-        ),
-      );
-      return;
-    }
 
     setState(() => _guardando = true);
 
@@ -205,12 +255,13 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
       String fotoUrlFinal = '';
       String aptoUrlFinal = '';
       final dni = _dniController.text.trim();
+      final nombreSocio = _nombreController.text.trim();
 
       if (_fotoBytes != null && _fotoNombre != null) {
         fotoUrlFinal = await _subirArchivo(
           _fotoBytes!,
           'socios/fotos',
-          dni,
+          dni.isEmpty ? 'foto' : dni,
           _fotoNombre!,
         );
       }
@@ -218,7 +269,7 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
         aptoUrlFinal = await _subirArchivo(
           _aptoBytes!,
           'socios/aptos',
-          dni,
+          dni.isEmpty ? 'apto' : dni,
           _aptoNombre!,
         );
       }
@@ -241,7 +292,7 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
       final nuevoSocio = SocioModel(
         id: nuevoDocSocioRef.id,
         numeroSocio: numeroSocioStr,
-        nombre: _nombreController.text.trim(),
+        nombre: nombreSocio,
         dni: dni,
         telefono: numLimpio,
         fotoUrl: fotoUrlFinal,
@@ -252,10 +303,10 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
         vencimientoAptoMedico:
             _vencimientoApto ?? DateTime.now().add(const Duration(days: 365)),
         contactoEmergencia: _contactoEmergenciaController.text.trim(),
-        deporte: _deporteSeleccionado!,
-        frecuencia: _frecuenciaSeleccionada!,
+        deporte: _deporteSeleccionado ?? 'Socio Natatorio',
+        frecuencia: _frecuenciaSeleccionada ?? 'Sin Especificar',
         dias: _diasSeleccionados,
-        idBloqueHorario: _bloqueHorarioSeleccionadoId!,
+        idBloqueHorario: _bloqueHorarioSeleccionadoId ?? '',
         saldoCuentaCorriente: 0.0,
         esEstudianteEscuela: _esEstudianteEscuela,
         colegioInstitucion: _esEstudianteEscuela
@@ -276,16 +327,12 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
       await nuevoDocSocioRef.set(mapData);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('¡Socio N° $numeroSocioStr registrado con éxito!'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        widget.onVolver();
+        setState(() => _guardando = false);
+        _mostrarConfirmacionSocio(numeroSocioStr, nombreSocio);
       }
     } catch (e) {
       if (mounted) {
+        setState(() => _guardando = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Error al guardar socio: $e'),
@@ -293,8 +340,6 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
           ),
         );
       }
-    } finally {
-      if (mounted) setState(() => _guardando = false);
     }
   }
 
@@ -414,79 +459,53 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
                                 ),
                               ),
                             const SizedBox(height: 32),
+
+                            // 🟢 ÚNICO CAMPO OBLIGATORIO
                             TextFormField(
                               controller: _nombreController,
                               decoration: const InputDecoration(
-                                labelText: 'Nombre Completo',
+                                labelText: 'Apellido y Nombre *',
                                 border: OutlineInputBorder(),
                                 prefixIcon: Icon(Icons.badge_rounded),
                               ),
                               validator: (v) =>
-                                  v!.trim().isEmpty ? 'Requerido' : null,
+                                  v == null || v.trim().isEmpty
+                                      ? 'El Apellido y Nombre es obligatorio'
+                                      : null,
                             ),
                             const SizedBox(height: 20),
+
+                            // 🟡 CAMPOS OPCIONALES
                             TextFormField(
                               controller: _dniController,
                               keyboardType: TextInputType.number,
                               decoration: const InputDecoration(
-                                labelText: 'DNI / Identificación',
+                                labelText: 'DNI / Identificación (Opcional)',
                                 border: OutlineInputBorder(),
                                 prefixIcon: Icon(Icons.remember_me_rounded),
                               ),
-                              validator: (v) =>
-                                  v!.trim().isEmpty ? 'Requerido' : null,
                             ),
                             const SizedBox(height: 20),
                             TextFormField(
                               controller: _telefonoController,
                               keyboardType: TextInputType.phone,
                               decoration: const InputDecoration(
-                                labelText:
-                                    'Teléfono / WhatsApp (Notificaciones)',
-                                hintText:
-                                    'Ej: 5491112345678 (Con código de área)',
+                                labelText: 'Teléfono / WhatsApp (Opcional)',
+                                hintText: 'Ej: 5491112345678',
                                 prefixIcon: Icon(Icons.phone_android_rounded),
                                 border: OutlineInputBorder(),
                               ),
-                              validator: (value) {
-                                if (value == null || value.trim().isEmpty) {
-                                  return 'El teléfono es obligatorio para notificaciones';
-                                }
-                                final numLimpio = value.replaceAll(
-                                  RegExp(r'[\s\-\+]'),
-                                  '',
-                                );
-                                if (!RegExp(
-                                  r'^\d{10,15}$',
-                                ).hasMatch(numLimpio)) {
-                                  return 'Ingrese un número válido con código de área (10 a 15 dígitos)';
-                                }
-                                return null;
-                              },
                             ),
                             const SizedBox(height: 20),
                             TextFormField(
                               controller: _emailController,
                               keyboardType: TextInputType.emailAddress,
                               decoration: const InputDecoration(
-                                labelText:
-                                    'Correo Electrónico (Notificaciones)',
+                                labelText: 'Correo Electrónico (Opcional)',
                                 hintText: 'ejemplo@correo.com',
                                 prefixIcon: Icon(Icons.email_rounded),
                                 border: OutlineInputBorder(),
                               ),
-                              validator: (value) {
-                                if (value == null || value.trim().isEmpty) {
-                                  return 'El email es obligatorio para notificaciones';
-                                }
-                                final emailRegex = RegExp(
-                                  r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$',
-                                );
-                                if (!emailRegex.hasMatch(value.trim())) {
-                                  return 'Ingrese una dirección de correo válida';
-                                }
-                                return null;
-                              },
                             ),
                             const SizedBox(height: 20),
                             ListTile(
@@ -496,7 +515,7 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
                               ),
                               title: Text(
                                 _fechaNacimiento == null
-                                    ? 'Seleccionar Fecha de Nacimiento'
+                                    ? 'Fecha de Nacimiento (Opcional)'
                                     : 'Nacimiento: ${DateFormat('dd/MM/yyyy').format(_fechaNacimiento!)}',
                               ),
                               shape: RoundedRectangleBorder(
@@ -517,7 +536,7 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
                             ),
                             const SizedBox(height: 40),
                             const Text(
-                              '2. Área Médica y de Emergencias',
+                              '2. Área Médica y de Emergencias (Opcional)',
                               style: TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.bold,
@@ -529,12 +548,10 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
                               controller: _contactoEmergenciaController,
                               decoration: const InputDecoration(
                                 labelText:
-                                    'Contacto de Emergencia (Nombre y Teléfono)',
+                                    'Contacto de Emergencia (Opcional)',
                                 border: OutlineInputBorder(),
                                 prefixIcon: Icon(Icons.heart_broken_rounded),
                               ),
-                              validator: (v) =>
-                                  v!.trim().isEmpty ? 'Requerido' : null,
                             ),
                             const SizedBox(height: 20),
                             Container(
@@ -625,7 +642,7 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text(
-                              '3. Asignación Deportiva',
+                              '3. Asignación Deportiva (Opcional)',
                               style: TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.bold,
@@ -761,10 +778,6 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
                                   border: OutlineInputBorder(),
                                   prefixIcon: Icon(Icons.school_rounded),
                                 ),
-                                validator: (v) =>
-                                    _esEstudianteEscuela && v!.trim().isEmpty
-                                    ? 'Ingresá el nombre del colegio'
-                                    : null,
                               ),
                               const SizedBox(height: 16),
                               Row(
