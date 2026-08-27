@@ -31,7 +31,6 @@ import '../buffet/menu_buffet_page.dart';
 import 'package:natatorio_app/features/paddle/crear_torneo_page.dart';
 import 'package:natatorio_app/features/paddle/detalle_torneo_page.dart';
 
-// 📱 IMPORT DE LA PANTALLA EXCLUSIVA MÓVIL DE SOCIO
 import '../socios/socio_dashboard_page.dart';
 
 class DashboardPage extends StatefulWidget {
@@ -47,6 +46,7 @@ class _DashboardPageState extends State<DashboardPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final User? _userActual = FirebaseAuth.instance.currentUser;
   late Widget _pantallaActual;
+  String _filtroMenu = "";
 
   @override
   void initState() {
@@ -99,10 +99,12 @@ class _DashboardPageState extends State<DashboardPage> {
                 fontWeight: FontWeight.w500,
               ),
             ),
-            const SizedBox(height: 40),
+            const SizedBox(height: 30),
 
+            // 📊 FILA DE TARJETAS MÉTRICAS CLAVE EN TIEMPO REAL
             Row(
               children: [
+                // 1. Total Socios Registrados
                 StreamBuilder<QuerySnapshot>(
                   stream: _firestore.collection('socios').snapshots(),
                   builder: (context, snapshot) {
@@ -118,8 +120,70 @@ class _DashboardPageState extends State<DashboardPage> {
                     );
                   },
                 ),
-                const SizedBox(width: 20),
+                const SizedBox(width: 16),
 
+                // 2. Socios con Cuota al Día
+                StreamBuilder<QuerySnapshot>(
+                  stream: _firestore.collection('socios').snapshots(),
+                  builder: (context, snapshot) {
+                    String cuotasAlDia = '...';
+                    if (snapshot.hasData) {
+                      final mesActualClave =
+                          "${ahora.year}-${ahora.month.toString().padLeft(2, '0')}";
+
+                      final alDia = snapshot.data!.docs.where((doc) {
+                        final data = doc.data() as Map<String, dynamic>;
+                        final ultimoMes = data['ultimoMesPago'] ?? '';
+                        return ultimoMes == mesActualClave ||
+                            data['estadoCuota'] == 'AL_DIA';
+                      }).length;
+
+                      cuotasAlDia = "$alDia / ${snapshot.data!.docs.length}";
+                    }
+
+                    return _buildMetricCard(
+                      'Cuotas al Día',
+                      cuotasAlDia,
+                      Icons.verified_user_rounded,
+                      Colors.green.shade700,
+                      const Color(0xFFF0FDF4),
+                    );
+                  },
+                ),
+                const SizedBox(width: 16),
+
+                // 3. Nivel de Presentismo Diario (Accesos registrados hoy)
+                StreamBuilder<QuerySnapshot>(
+                  stream: _firestore
+                      .collection('asistencias_accesos')
+                      .snapshots(),
+                  builder: (context, snapshot) {
+                    String presentismoHoy = '0';
+                    if (snapshot.hasData) {
+                      final hoyStr =
+                          "${ahora.year}-${ahora.month.toString().padLeft(2, '0')}-${ahora.day.toString().padLeft(2, '0')}";
+
+                      final accesosDeHoy = snapshot.data!.docs.where((doc) {
+                        final data = doc.data() as Map<String, dynamic>;
+                        final fechaReg = data['fechaStr'] ?? '';
+                        return fechaReg.startsWith(hoyStr);
+                      }).length;
+
+                      presentismoHoy = accesosDeHoy.toString();
+                    }
+
+                    return _buildMetricCard(
+                      'Presentismo Hoy',
+                      '$presentismoHoy ingresos',
+                      Icons.fingerprint_rounded,
+                      Colors.purple.shade700,
+                      const Color(0xFFFAF5FF),
+                    );
+                  },
+                ),
+                const SizedBox(width: 16),
+
+                // 4. Ocupación Canchas Hoy
                 StreamBuilder<QuerySnapshot>(
                   stream: _firestore.collection('reservas_canchas').snapshots(),
                   builder: (context, snapshot) {
@@ -134,7 +198,7 @@ class _DashboardPageState extends State<DashboardPage> {
                       }
                     }
                     return _buildMetricCard(
-                      'Ocupación Canchas Hoy',
+                      'Ocupación Canchas',
                       porcentaje,
                       Icons.analytics_rounded,
                       Colors.orange.shade700,
@@ -144,7 +208,8 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
 
                 if (widget.rolUsuario == 'admin') ...[
-                  const SizedBox(width: 20),
+                  const SizedBox(width: 16),
+                  // 5. Caja Buffet / Recaudación
                   StreamBuilder<QuerySnapshot>(
                     stream: _firestore.collection('ventas_buffet').snapshots(),
                     builder: (context, snapshot) {
@@ -157,7 +222,7 @@ class _DashboardPageState extends State<DashboardPage> {
                         }
                       }
                       return _buildMetricCard(
-                        'Caja Buffet (Total)',
+                        'Caja Buffet Total',
                         '\$${totalDiario.toStringAsFixed(0)}',
                         Icons.account_balance_wallet_rounded,
                         Colors.teal.shade700,
@@ -767,10 +832,13 @@ class _DashboardPageState extends State<DashboardPage> {
     });
   }
 
+  bool _coincideFiltro(String titulo) {
+    if (_filtroMenu.isEmpty) return true;
+    return titulo.toLowerCase().contains(_filtroMenu.toLowerCase());
+  }
+
   @override
   Widget build(BuildContext context) {
-    // 🛡️ RESTRICCIÓN DE SEGURIDAD Y NAVEGACIÓN
-    // Si el usuario no es 'admin', renderiza ÚNICAMENTE el Portal Móvil del Socio
     if (widget.rolUsuario != 'admin') {
       return StreamBuilder<QuerySnapshot>(
         stream: _firestore
@@ -787,14 +855,12 @@ class _DashboardPageState extends State<DashboardPage> {
 
           if (snapshot.hasData && snapshot.data!.docs.isNotEmpty) {
             final docSocio = snapshot.data!.docs.first;
-            // 📱 Carga limpia e individual del Portal del Socio
             return SocioDashboardPage(
               socioId: docSocio.id,
               socioData: docSocio.data() as Map<String, dynamic>,
             );
           }
 
-          // Si el usuario tiene rol socio pero aún no se vinculó con su ficha por DNI
           return Scaffold(
             backgroundColor: const Color(0xFFF8FAFC),
             appBar: AppBar(
@@ -865,7 +931,6 @@ class _DashboardPageState extends State<DashboardPage> {
       );
     }
 
-    // 💻 SI ES ADMINISTRADOR: RENDERIZA LA CONSOLA COMPLETA CON MENÚ LATERAL
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       body: Row(
@@ -900,221 +965,277 @@ class _DashboardPageState extends State<DashboardPage> {
                   ),
                 ),
                 const Divider(color: Colors.blueAccent),
+
+                // 🔍 BUSCADOR EN EL MENÚ LATERAL
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12.0,
+                    vertical: 8.0,
+                  ),
+                  child: TextField(
+                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                    decoration: InputDecoration(
+                      hintText: 'Filtrar menú...',
+                      hintStyle: const TextStyle(
+                        color: Colors.blueGrey,
+                        fontSize: 13,
+                      ),
+                      prefixIcon: const Icon(
+                        Icons.search,
+                        color: Colors.blueGrey,
+                        size: 18,
+                      ),
+                      filled: true,
+                      fillColor: const Color(0xFF0F172A),
+                      isDense: true,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                    onChanged: (val) => setState(() => _filtroMenu = val),
+                  ),
+                ),
                 const SizedBox(height: 10),
 
                 Expanded(
                   child: SingleChildScrollView(
                     child: Column(
                       children: [
-                        _buildMenuItem(
-                          Icons.dashboard_rounded,
-                          'Inicio',
-                          onTap: () => setState(
-                            () => _pantallaActual = _construirPanelInicio(),
-                          ),
-                        ),
-                        _buildMenuItem(
-                          Icons.fingerprint_rounded,
-                          'Control Acceso (Socios)',
-                          onTap: () => setState(
-                            () => _pantallaActual = ControlAccesoPage(
-                              rolUsuario: widget.rolUsuario,
-                            ),
-                          ),
-                        ),
-                        _buildMenuItem(
-                          Icons.people_alt_rounded,
-                          'Socios',
-                          onTap: _mostrarSociosPage,
-                        ),
-                        _buildMenuItem(
-                          Icons.mark_email_unread_rounded,
-                          'Mensajería & Avisos',
-                          onTap: () => setState(
-                            () => _pantallaActual = MensajeriaPage(
-                              rolUsuario: widget.rolUsuario,
-                            ),
-                          ),
-                        ),
-                        _buildMenuItem(
-                          Icons.sports_tennis_rounded,
-                          'Canchas & Turnos',
-                          onTap: () => setState(
-                            () => _pantallaActual = const CanchasPage(),
-                          ),
-                        ),
-                        _buildMenuItem(
-                          Icons.emoji_events_rounded,
-                          'Torneos de Pádel',
-                          onTap: () => setState(
-                            () => _pantallaActual = _construirVistaTorneos(),
-                          ),
-                        ),
-                        _buildMenuItem(
-                          Icons.inventory_2_rounded,
-                          'Inventario Central',
-                          onTap: () => setState(
-                            () =>
-                                _pantallaActual = const InventarioGeneralPage(),
-                          ),
-                        ),
-                        _buildMenuItem(
-                          Icons.point_of_sale_rounded,
-                          'Punto de Venta',
-                          onTap: () => setState(
-                            () => _pantallaActual = const PosCajaPage(),
-                          ),
-                        ),
-                        _buildMenuItem(
-                          Icons.analytics_outlined,
-                          'Explorador Ventas POS',
-                          onTap: () => setState(
-                            () =>
-                                _pantallaActual = const ExploradorVentasPage(),
-                          ),
-                        ),
-                        _buildMenuItem(
-                          Icons.restaurant_menu_rounded,
-                          'Menú del Buffet',
-                          onTap: () => setState(
-                            () => _pantallaActual = const MenuBuffetPage(),
-                          ),
-                        ),
-                        _buildMenuItem(
-                          Icons.local_shipping_rounded,
-                          'Compras & Proveedores',
-                          onTap: () => setState(
-                            () => _pantallaActual =
-                                const ProveedoresComprasPage(),
-                          ),
-                        ),
-                        _buildMenuItem(
-                          Icons.soup_kitchen_rounded,
-                          'Monitor de Cocina',
-                          onTap: () => setState(
-                            () => _pantallaActual = const MonitorCocinaPage(),
-                          ),
-                        ),
-                        _buildMenuItem(
-                          Icons.badge_rounded,
-                          'Staff Profesores',
-                          onTap: () => setState(
-                            () => _pantallaActual = ProfesoresPage(
-                              esAdmin: widget.rolUsuario == 'admin',
-                            ),
-                          ),
-                        ),
-                        _buildMenuItem(
-                          Icons.fact_check_rounded,
-                          'Asistencia Profesores',
-                          onTap: () => setState(
-                            () => _pantallaActual = const NominaDiariaPage(),
-                          ),
-                        ),
-                        _buildMenuItem(
-                          Icons.edit_calendar_rounded,
-                          'Asignar Cronogramas',
-                          onTap: () => setState(
-                            () => _pantallaActual = const CronogramasPage(),
-                          ),
-                        ),
-
-                        if (widget.rolUsuario == 'admin') ...[
+                        if (_coincideFiltro('Inicio'))
                           _buildMenuItem(
-                            Icons.monetization_on_rounded,
-                            'Tesorería',
+                            Icons.dashboard_rounded,
+                            'Inicio',
                             onTap: () => setState(
-                              () => _pantallaActual = TesoreriaPage(
+                              () => _pantallaActual = _construirPanelInicio(),
+                            ),
+                          ),
+                        if (_coincideFiltro('Control Acceso'))
+                          _buildMenuItem(
+                            Icons.fingerprint_rounded,
+                            'Control Acceso (Socios)',
+                            onTap: () => setState(
+                              () => _pantallaActual = ControlAccesoPage(
                                 rolUsuario: widget.rolUsuario,
                               ),
                             ),
                           ),
+                        if (_coincideFiltro('Socios'))
                           _buildMenuItem(
-                            Icons.receipt_long_rounded,
-                            'Liquidación de Cuotas',
-                            onTap: () => setState(
-                              () => _pantallaActual =
-                                  const LiquidacionCuotasPage(),
-                            ),
+                            Icons.people_alt_rounded,
+                            'Socios',
+                            onTap: _mostrarSociosPage,
                           ),
+                        if (_coincideFiltro('Mensajería & Avisos'))
                           _buildMenuItem(
-                            Icons.receipt_long_rounded,
-                            'Libros IVA & Fiscal',
+                            Icons.mark_email_unread_rounded,
+                            'Mensajería & Avisos',
                             onTap: () => setState(
-                              () => _pantallaActual =
-                                  const TesoreriaLibrosIvaPage(),
-                            ),
-                          ),
-                          _buildMenuItem(
-                            Icons.bar_chart_rounded,
-                            'Reportes Generales (BI)',
-                            onTap: () => setState(
-                              () => _pantallaActual = const ReportesBiPage(),
-                            ),
-                          ),
-                          _buildMenuItem(
-                            Icons.price_change_rounded,
-                            'Configurar Tarifas',
-                            onTap: () => setState(
-                              () => _pantallaActual = const TarifasPage(),
-                            ),
-                          ),
-                          _buildMenuItem(
-                            Icons.admin_panel_settings_rounded,
-                            'Usuarios',
-                            onTap: () => setState(
-                              () => _pantallaActual = const UsuariosPage(),
-                            ),
-                          ),
-                          Theme(
-                            data: Theme.of(
-                              context,
-                            ).copyWith(dividerColor: Colors.transparent),
-                            child: ExpansionTile(
-                              leading: const Icon(
-                                Icons.settings_suggest_rounded,
-                                color: Colors.blueGrey,
+                              () => _pantallaActual = MensajeriaPage(
+                                rolUsuario: widget.rolUsuario,
                               ),
-                              title: const Text(
-                                'Configuración',
-                                style: TextStyle(
+                            ),
+                          ),
+                        if (_coincideFiltro('Canchas & Turnos'))
+                          _buildMenuItem(
+                            Icons.sports_tennis_rounded,
+                            'Canchas & Turnos',
+                            onTap: () => setState(
+                              () => _pantallaActual = const CanchasPage(),
+                            ),
+                          ),
+                        if (_coincideFiltro('Torneos de Pádel'))
+                          _buildMenuItem(
+                            Icons.emoji_events_rounded,
+                            'Torneos de Pádel',
+                            onTap: () => setState(
+                              () => _pantallaActual = _construirVistaTorneos(),
+                            ),
+                          ),
+                        if (_coincideFiltro('Inventario Central'))
+                          _buildMenuItem(
+                            Icons.inventory_2_rounded,
+                            'Inventario Central',
+                            onTap: () => setState(
+                              () => _pantallaActual =
+                                  const InventarioGeneralPage(),
+                            ),
+                          ),
+                        if (_coincideFiltro('Punto de Venta'))
+                          _buildMenuItem(
+                            Icons.point_of_sale_rounded,
+                            'Punto de Venta',
+                            onTap: () => setState(
+                              () => _pantallaActual = const PosCajaPage(),
+                            ),
+                          ),
+                        if (_coincideFiltro('Explorador Ventas POS'))
+                          _buildMenuItem(
+                            Icons.analytics_outlined,
+                            'Explorador Ventas POS',
+                            onTap: () => setState(
+                              () => _pantallaActual =
+                                  const ExploradorVentasPage(),
+                            ),
+                          ),
+                        if (_coincideFiltro('Menú del Buffet'))
+                          _buildMenuItem(
+                            Icons.restaurant_menu_rounded,
+                            'Menú del Buffet',
+                            onTap: () => setState(
+                              () => _pantallaActual = const MenuBuffetPage(),
+                            ),
+                          ),
+                        if (_coincideFiltro('Compras & Proveedores'))
+                          _buildMenuItem(
+                            Icons.local_shipping_rounded,
+                            'Compras & Proveedores',
+                            onTap: () => setState(
+                              () => _pantallaActual =
+                                  const ProveedoresComprasPage(),
+                            ),
+                          ),
+                        if (_coincideFiltro('Monitor de Cocina'))
+                          _buildMenuItem(
+                            Icons.soup_kitchen_rounded,
+                            'Monitor de Cocina',
+                            onTap: () => setState(
+                              () => _pantallaActual = const MonitorCocinaPage(),
+                            ),
+                          ),
+                        if (_coincideFiltro('Staff Profesores'))
+                          _buildMenuItem(
+                            Icons.badge_rounded,
+                            'Staff Profesores',
+                            onTap: () => setState(
+                              () => _pantallaActual = ProfesoresPage(
+                                esAdmin: widget.rolUsuario == 'admin',
+                              ),
+                            ),
+                          ),
+                        if (_coincideFiltro('Asistencia Profesores'))
+                          _buildMenuItem(
+                            Icons.fact_check_rounded,
+                            'Asistencia Profesores',
+                            onTap: () => setState(
+                              () => _pantallaActual = const NominaDiariaPage(),
+                            ),
+                          ),
+                        if (_coincideFiltro('Asignar Cronogramas'))
+                          _buildMenuItem(
+                            Icons.edit_calendar_rounded,
+                            'Asignar Cronogramas',
+                            onTap: () => setState(
+                              () => _pantallaActual = const CronogramasPage(),
+                            ),
+                          ),
+
+                        if (widget.rolUsuario == 'admin') ...[
+                          if (_coincideFiltro('Tesorería'))
+                            _buildMenuItem(
+                              Icons.monetization_on_rounded,
+                              'Tesorería',
+                              onTap: () => setState(
+                                () => _pantallaActual = TesoreriaPage(
+                                  rolUsuario: widget.rolUsuario,
+                                ),
+                              ),
+                            ),
+                          if (_coincideFiltro('Liquidación de Cuotas'))
+                            _buildMenuItem(
+                              Icons.receipt_long_rounded,
+                              'Liquidación de Cuotas',
+                              onTap: () => setState(
+                                () => _pantallaActual =
+                                    const LiquidacionCuotasPage(),
+                              ),
+                            ),
+                          if (_coincideFiltro('Libros IVA & Fiscal'))
+                            _buildMenuItem(
+                              Icons.receipt_long_rounded,
+                              'Libros IVA & Fiscal',
+                              onTap: () => setState(
+                                () => _pantallaActual =
+                                    const TesoreriaLibrosIvaPage(),
+                              ),
+                            ),
+                          if (_coincideFiltro('Reportes Generales'))
+                            _buildMenuItem(
+                              Icons.bar_chart_rounded,
+                              'Reportes Generales (BI)',
+                              onTap: () => setState(
+                                () => _pantallaActual = const ReportesBiPage(),
+                              ),
+                            ),
+                          if (_coincideFiltro('Configurar Tarifas'))
+                            _buildMenuItem(
+                              Icons.price_change_rounded,
+                              'Configurar Tarifas',
+                              onTap: () => setState(
+                                () => _pantallaActual = const TarifasPage(),
+                              ),
+                            ),
+                          if (_coincideFiltro('Usuarios'))
+                            _buildMenuItem(
+                              Icons.admin_panel_settings_rounded,
+                              'Usuarios',
+                              onTap: () => setState(
+                                () => _pantallaActual = const UsuariosPage(),
+                              ),
+                            ),
+                          if (_coincideFiltro('Configuración') ||
+                              _coincideFiltro('Ajustes') ||
+                              _coincideFiltro('Paddle') ||
+                              _coincideFiltro('Fiscales'))
+                            Theme(
+                              data: Theme.of(
+                                context,
+                              ).copyWith(dividerColor: Colors.transparent),
+                              child: ExpansionTile(
+                                leading: const Icon(
+                                  Icons.settings_suggest_rounded,
                                   color: Colors.blueGrey,
-                                  fontSize: 14,
                                 ),
+                                title: const Text(
+                                  'Configuración',
+                                  style: TextStyle(
+                                    color: Colors.blueGrey,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                                iconColor: Colors.blueGrey,
+                                collapsedIconColor: Colors.blueGrey,
+                                childrenPadding: const EdgeInsets.only(
+                                  left: 12.0,
+                                ),
+                                children: [
+                                  _buildMenuItem(
+                                    Icons.tune_rounded,
+                                    'Ajustes del Sistema',
+                                    onTap: () => setState(
+                                      () => _pantallaActual =
+                                          const ConfiguracionPage(),
+                                    ),
+                                  ),
+                                  _buildMenuItem(
+                                    Icons.sports_tennis_rounded,
+                                    'Ajustes de Paddle',
+                                    onTap: () => setState(
+                                      () => _pantallaActual =
+                                          const ConfiguracionPaddlePage(),
+                                    ),
+                                  ),
+                                  _buildMenuItem(
+                                    Icons.receipt_long_rounded,
+                                    'Parámetros Fiscales & MP',
+                                    onTap: () => setState(
+                                      () => _pantallaActual =
+                                          const ConfiguracionFiscalPage(),
+                                    ),
+                                  ),
+                                ],
                               ),
-                              iconColor: Colors.blueGrey,
-                              collapsedIconColor: Colors.blueGrey,
-                              childrenPadding: const EdgeInsets.only(
-                                left: 12.0,
-                              ),
-                              children: [
-                                _buildMenuItem(
-                                  Icons.tune_rounded,
-                                  'Ajustes del Sistema',
-                                  onTap: () => setState(
-                                    () => _pantallaActual =
-                                        const ConfiguracionPage(),
-                                  ),
-                                ),
-                                _buildMenuItem(
-                                  Icons.sports_tennis_rounded,
-                                  'Ajustes de Paddle',
-                                  onTap: () => setState(
-                                    () => _pantallaActual =
-                                        const ConfiguracionPaddlePage(),
-                                  ),
-                                ),
-                                _buildMenuItem(
-                                  Icons.receipt_long_rounded,
-                                  'Parámetros Fiscales & MP',
-                                  onTap: () => setState(
-                                    () => _pantallaActual =
-                                        const ConfiguracionFiscalPage(),
-                                  ),
-                                ),
-                              ],
                             ),
-                          ),
                         ],
                       ],
                     ),
@@ -1184,7 +1305,7 @@ class _DashboardPageState extends State<DashboardPage> {
   ) {
     return Expanded(
       child: Container(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
           color: backgroundColor,
           borderRadius: BorderRadius.circular(16),
@@ -1201,14 +1322,14 @@ class _DashboardPageState extends State<DashboardPage> {
                   style: TextStyle(
                     color: color.withValues(alpha: 0.8),
                     fontWeight: FontWeight.bold,
-                    fontSize: 13,
+                    fontSize: 12,
                   ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 Text(
                   value,
                   style: const TextStyle(
-                    fontSize: 32,
+                    fontSize: 24,
                     fontWeight: FontWeight.w900,
                     color: Color(0xFF0F172A),
                   ),
@@ -1216,7 +1337,7 @@ class _DashboardPageState extends State<DashboardPage> {
               ],
             ),
             Container(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
                 color: Colors.white,
                 shape: BoxShape.circle,
@@ -1228,7 +1349,7 @@ class _DashboardPageState extends State<DashboardPage> {
                   ),
                 ],
               ),
-              child: Icon(icon, size: 28, color: color),
+              child: Icon(icon, size: 24, color: color),
             ),
           ],
         ),

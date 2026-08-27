@@ -89,6 +89,253 @@ class _PosCajaPageState extends State<PosCajaPage> {
     }
   }
 
+  // 📊 DIÁLOGO Y PROCESO DE CIERRE DE CAJA CON REPORTE CONSOLIDADO
+  Future<void> _mostrarDialogoCierreCaja(DocumentSnapshot docCaja) async {
+    final dataCaja = docCaja.data() as Map<String, dynamic>;
+    final double inicial =
+        (dataCaja['montoInicialARS'] as num?)?.toDouble() ?? 0.0;
+    final double efecARS =
+        (dataCaja['totalEfectivoARS'] as num?)?.toDouble() ?? 0.0;
+    final double efecUSD =
+        (dataCaja['totalEfectivoUSD'] as num?)?.toDouble() ?? 0.0;
+    final double mp = (dataCaja['totalMercadoPago'] as num?)?.toDouble() ?? 0.0;
+    final double debito =
+        (dataCaja['totalTarjetaDebito'] as num?)?.toDouble() ?? 0.0;
+    final double credito =
+        (dataCaja['totalTarjetaCredito'] as num?)?.toDouble() ?? 0.0;
+    final double trans =
+        (dataCaja['totalTransferencia'] as num?)?.toDouble() ?? 0.0;
+    final double ctaCte = (dataCaja['totalCtaCte'] as num?)?.toDouble() ?? 0.0;
+
+    final double totalGeneralRecaudado =
+        efecARS + mp + debito + credito + trans;
+    final TextEditingController obsCtrl = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.lock_rounded, color: Colors.red, size: 28),
+            SizedBox(width: 10),
+            Text('Cierre de Caja & Consolidado'),
+          ],
+        ),
+        content: SizedBox(
+          width: 450,
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Operador: $_usuarioOperador',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const Divider(),
+                const Text(
+                  'Resumen de Recaudación:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                _buildLineaConsolidado(
+                  'Monto Inicial Efectivo:',
+                  '\$${inicial.toStringAsFixed(2)} ARS',
+                ),
+                _buildLineaConsolidado(
+                  'Efectivo ARS en Caja:',
+                  '\$${efecARS.toStringAsFixed(2)} ARS',
+                ),
+                _buildLineaConsolidado(
+                  'Efectivo USD:',
+                  '\$${efecUSD.toStringAsFixed(2)} USD',
+                ),
+                _buildLineaConsolidado(
+                  'Mercado Pago:',
+                  '\$${mp.toStringAsFixed(2)} ARS',
+                ),
+                _buildLineaConsolidado(
+                  'Tarjeta Débito:',
+                  '\$${debito.toStringAsFixed(2)} ARS',
+                ),
+                _buildLineaConsolidado(
+                  'Tarjeta Crédito:',
+                  '\$${credito.toStringAsFixed(2)} ARS',
+                ),
+                _buildLineaConsolidado(
+                  'Transferencias:',
+                  '\$${trans.toStringAsFixed(2)} ARS',
+                ),
+                _buildLineaConsolidado(
+                  'Cuentas Corrientes:',
+                  '\$${ctaCte.toStringAsFixed(2)} ARS',
+                ),
+                const Divider(),
+                _buildLineaConsolidado(
+                  'TOTAL RECAUDADO:',
+                  '\$${totalGeneralRecaudado.toStringAsFixed(2)} ARS',
+                  esTotal: true,
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: obsCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Observaciones de Cierre',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Volver'),
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red.shade800,
+            ),
+            icon: const Icon(Icons.picture_as_pdf_rounded, color: Colors.white),
+            label: const Text(
+              'Cerrar Caja y Emitir Reporte',
+              style: TextStyle(color: Colors.white),
+            ),
+            onPressed: () async {
+              Navigator.pop(ctx);
+
+              await _firestore
+                  .collection('control_cajas')
+                  .doc(docCaja.id)
+                  .update({
+                    'estado': 'Cerrada',
+                    'fechaCierre': DateTime.now(),
+                    'totalFinalGeneral': totalGeneralRecaudado,
+                    'observacionesCierre': obsCtrl.text.trim(),
+                  });
+
+              if (_socioSeleccionadoPOS?['telefono'] != null) {
+                await _enviarReporteConsolidadoWhatsApp(
+                  telefono: _socioSeleccionadoPOS!['telefono'],
+                  operador: _usuarioOperador,
+                  montoInicial: inicial,
+                  efectivoARS: efecARS,
+                  efectivoUSD: efecUSD,
+                  mercadoPago: mp,
+                  tarjetas: debito + credito,
+                  transferencias: trans,
+                  ctaCte: ctaCte,
+                  totalGeneral: totalGeneralRecaudado,
+                  observaciones: obsCtrl.text.trim(),
+                );
+              }
+
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      '🔒 CAJA CERRADA: Reporte consolidado procesado.',
+                    ),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+              }
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLineaConsolidado(
+    String etiqueta,
+    String valor, {
+    bool esTotal = false,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3.0),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            etiqueta,
+            style: TextStyle(
+              fontWeight: esTotal ? FontWeight.bold : FontWeight.normal,
+              fontSize: esTotal ? 15 : 13,
+            ),
+          ),
+          Text(
+            valor,
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: esTotal ? 16 : 13,
+              color: esTotal ? Colors.green.shade800 : Colors.black,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 📲 ENVÍO DEL CONSOLIDADO POR WHATSAPP
+  Future<void> _enviarReporteConsolidadoWhatsApp({
+    required String telefono,
+    required String operador,
+    required double montoInicial,
+    required double efectivoARS,
+    required double efectivoUSD,
+    required double mercadoPago,
+    required double tarjetas,
+    required double transferencias,
+    required double ctaCte,
+    required double totalGeneral,
+    required String observaciones,
+  }) async {
+    String limpio = telefono.replaceAll(RegExp(r'\D'), '');
+    if (limpio.isEmpty) return;
+
+    final buffer = StringBuffer();
+    buffer.writeln('📊 *REPORTE CONSOLIDADO - CIERRE DE CAJA*');
+    buffer.writeln('----------------------------------------');
+    buffer.writeln('👤 *Operador:* $operador');
+    buffer.writeln(
+      '📅 *Fecha:* ${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year} ${DateTime.now().hour}:${DateTime.now().minute} hs',
+    );
+    buffer.writeln('----------------------------------------');
+    buffer.writeln(
+      '• *Monto Inicial:* \$${montoInicial.toStringAsFixed(2)} ARS',
+    );
+    buffer.writeln(
+      '• *Efectivo en Caja:* \$${efectivoARS.toStringAsFixed(2)} ARS',
+    );
+    if (efectivoUSD > 0)
+      buffer.writeln(
+        '• *Efectivo USD:* \$${efectivoUSD.toStringAsFixed(2)} USD',
+      );
+    buffer.writeln('• *Mercado Pago:* \$${mercadoPago.toStringAsFixed(2)} ARS');
+    buffer.writeln('• *Tarjetas:* \$${tarjetas.toStringAsFixed(2)} ARS');
+    buffer.writeln(
+      '• *Transferencias:* \$${transferencias.toStringAsFixed(2)} ARS',
+    );
+    buffer.writeln('• *Cta Cte:* \$${ctaCte.toStringAsFixed(2)} ARS');
+    buffer.writeln('----------------------------------------');
+    buffer.writeln(
+      '💰 *TOTAL RECAUDADO:* \$${totalGeneral.toStringAsFixed(2)} ARS',
+    );
+    if (observaciones.isNotEmpty) buffer.writeln('\n📝 *Obs:* $observaciones');
+
+    try {
+      await http.post(
+        Uri.parse('https://servicio-whatsapp-oqua.onrender.com/send-whatsapp'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'phone': limpio, 'message': buffer.toString()}),
+      );
+    } catch (e) {
+      print('Error enviando consolidado: $e');
+    }
+  }
+
   // ✏️ EDICIÓN MANUAL DE PRECIO
   void _editarPrecioItem(int index) {
     final item = _carrito[index];
@@ -767,7 +1014,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
     final docCajaId = cajaQuery.docs.first.id;
     WriteBatch batch = _firestore.batch();
 
-    // Guardar referencia local antes de limpiar variables de estado
     final List<Map<String, dynamic>> itemsCobrados = List.from(_carrito);
     final double totalVentaActual = totalCarrito;
     final Map<String, dynamic>? datosSocioActual = _socioSeleccionadoPOS;
@@ -878,7 +1124,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
 
     await batch.commit();
 
-    // 📲 DISPARAR ENVIÓ AUTOMÁTICO DE COMPROBANTE POR WHATSAPP
     final String? telefonoSocio = datosSocioActual?['telefono'] as String?;
     final String nombreCliente =
         datosSocioActual?['nombre'] ?? 'Mostrador Directo';
@@ -1057,7 +1302,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
                             ),
                             label: Text(
                               estaAbierta
-                                  ? 'Caja Abierta'
+                                  ? 'Caja Abierta (Cerrar)'
                                   : 'Abrir Caja Manual',
                               style: TextStyle(
                                 fontWeight: FontWeight.bold,
@@ -1080,13 +1325,8 @@ class _PosCajaPageState extends State<PosCajaPage> {
                                   esCobroAutomatico: false,
                                 );
                               } else {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text(
-                                      'ℹ️ ESTADO CAJA: La caja ya se encuentra ABIERTA y lista para operar.',
-                                    ),
-                                    backgroundColor: Colors.blueGrey,
-                                  ),
+                                _mostrarDialogoCierreCaja(
+                                  snapshot.data!.docs.first,
                                 );
                               }
                             },
