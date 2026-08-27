@@ -192,7 +192,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
     }
   }
 
-  // 🔍 BUSCADOR INTELIGENTE: VERIFICACIÓN Y CARGA DE CUOTA DEL MES
+  // 🔍 BUSCADOR INTELIGENTE: VERIFICACIÓN Y CARGA DE CUOTA DEL MES (CON SELECCIÓN DE PERÍODO)
   Future<TarifaModel?> _obtenerTarifaVigente({
     required String deporte,
     required String frecuencia,
@@ -219,29 +219,15 @@ class _PosCajaPageState extends State<PosCajaPage> {
     Map<String, dynamic> socioData,
     String socioId,
   ) async {
-    final String mesActualClave =
-        "${DateTime.now().year}-${DateTime.now().month.toString().padLeft(2, '0')}";
+    final hoy = DateTime.now();
 
-    final cuotasPagas = await _firestore
-        .collection('socios')
-        .doc(socioId)
-        .collection('cuotas_pagas')
-        .doc(mesActualClave)
-        .get();
+    // Lista de períodos seleccionables (mes actual y hasta 5 meses a futuro)
+    List<String> periodosDisponibles = List.generate(6, (i) {
+      final fecha = DateTime(hoy.year, hoy.month + i, 1);
+      return "${fecha.year}-${fecha.month.toString().padLeft(2, '0')}";
+    });
 
-    if (cuotasPagas.exists) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'ℹ️ El socio se encuentra al día con la cuota de este mes.',
-            ),
-            backgroundColor: Colors.blueGrey,
-          ),
-        );
-      }
-      return;
-    }
+    String periodoSeleccionado = periodosDisponibles.first;
 
     final tarifa = await _obtenerTarifaVigente(
       deporte: socioData['deporte'] ?? 'Socio Natatorio',
@@ -261,43 +247,94 @@ class _PosCajaPageState extends State<PosCajaPage> {
       }
     }
 
+    const nombresMeses = [
+      'Enero',
+      'Febrero',
+      'Marzo',
+      'Abril',
+      'Mayo',
+      'Junio',
+      'Julio',
+      'Agosto',
+      'Septiembre',
+      'Octubre',
+      'Noviembre',
+      'Diciembre',
+    ];
+
     if (mounted) {
       showDialog(
         context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Cuota Social Pendiente'),
-          content: Text(
-            'Generar cobro para la cuota $mesActualClave.\n\n• Precio Regular: \$${precioRegular.toStringAsFixed(0)} ARS\n• Descuento Efectivo: \$${precioEfectivo.toStringAsFixed(0)} ARS',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Omitir'),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.teal),
-              onPressed: () {
-                Navigator.pop(ctx);
-                setState(() {
-                  _carrito.add({
-                    'id': 'cuota_$mesActualClave',
-                    'nombre': 'Cuota Social $mesActualClave',
-                    'precio': precioRegular,
-                    'precioRegularAuto': precioRegular,
-                    'precioEfectivoAuto': precioEfectivo,
-                    'cantidad': 1,
-                    'es_producto_fisico': false,
-                    'esCuotaSocial': true,
-                    'mesPeriodo': mesActualClave,
-                  });
-                });
-              },
-              child: const Text(
-                'Agregar Cuota al Ticket',
-                style: TextStyle(color: Colors.white),
+        builder: (ctx) => StatefulBuilder(
+          builder: (context, setModalState) {
+            return AlertDialog(
+              title: const Text('Cobro de Cuota Social'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Socio: ${socioData['nombre'] ?? ''}\n'
+                    '• Precio Regular: \$${precioRegular.toStringAsFixed(0)} ARS\n'
+                    '• Descuento Efectivo: \$${precioEfectivo.toStringAsFixed(0)} ARS',
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<String>(
+                    value: periodoSeleccionado,
+                    decoration: const InputDecoration(
+                      labelText: 'Período a Abonar',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.calendar_month_rounded),
+                    ),
+                    items: periodosDisponibles.map((p) {
+                      final partes = p.split('-');
+                      final anio = partes[0];
+                      final mesNum = int.parse(partes[1]);
+                      final nombreMes = nombresMeses[mesNum - 1];
+                      return DropdownMenuItem(
+                        value: p,
+                        child: Text('$nombreMes $anio ($p)'),
+                      );
+                    }).toList(),
+                    onChanged: (val) {
+                      if (val != null) {
+                        setModalState(() => periodoSeleccionado = val);
+                      }
+                    },
+                  ),
+                ],
               ),
-            ),
-          ],
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Omitir'),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.teal),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    setState(() {
+                      _carrito.add({
+                        'id': 'cuota_$periodoSeleccionado',
+                        'nombre': 'Cuota Social $periodoSeleccionado',
+                        'precio': precioRegular,
+                        'precioRegularAuto': precioRegular,
+                        'precioEfectivoAuto': precioEfectivo,
+                        'cantidad': 1,
+                        'es_producto_fisico': false,
+                        'esCuotaSocial': true,
+                        'mesPeriodo': periodoSeleccionado,
+                      });
+                    });
+                  },
+                  child: const Text(
+                    'Agregar Cuota al Ticket',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                ),
+              ],
+            );
+          },
         ),
       );
     }
@@ -470,10 +507,127 @@ class _PosCajaPageState extends State<PosCajaPage> {
     );
   }
 
-  // 🚪 COBRO Y IMPACTO
-  void _mostrarDialogoCobro() {
+  // 🔑 DIÁLOGO DE APERTURA MANUAL / AUTOMÁTICA DE CAJA
+  void _mostrarDialogoAperturaCajaDirecta({bool esCobroAutomatico = false}) {
+    final TextEditingController montoInicialCtrl = TextEditingController(
+      text: '0',
+    );
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogCtx) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(
+              Icons.point_of_sale_rounded,
+              color: Colors.orange,
+              size: 28,
+            ),
+            const SizedBox(width: 10),
+            Text(
+              esCobroAutomatico
+                  ? 'Caja Cerrada - Abrir Jornada'
+                  : 'Apertura Manual de Caja',
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              esCobroAutomatico
+                  ? 'No hay una caja abierta para registrar cobros. Ingresá el monto inicial en efectivo para abrir la caja ahora:'
+                  : 'Ingresá el saldo inicial en efectivo para abrir la caja del operador ($_usuarioOperador):',
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: montoInicialCtrl,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Monto Inicial Efectivo ARS (\$)',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.attach_money),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.green.shade700,
+            ),
+            onPressed: () async {
+              final double montoInicial =
+                  double.tryParse(montoInicialCtrl.text) ?? 0.0;
+
+              await _firestore.collection('control_cajas').add({
+                'usuario': _usuarioOperador,
+                'fechaApertura': DateTime.now(),
+                'montoInicialARS': montoInicial,
+                'estado': 'Abierta',
+                'totalEfectivoARS': montoInicial,
+                'totalEfectivoUSD': 0.0,
+                'totalMercadoPago': 0.0,
+                'totalTarjetaDebito': 0.0,
+                'totalTarjetaCredito': 0.0,
+                'totalTransferencia': 0.0,
+                'totalCtaCte': 0.0,
+              });
+
+              if (mounted) {
+                Navigator.pop(dialogCtx);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      '🟢 CAJA ABIERTA: Jornada iniciada con \$${montoInicial.toStringAsFixed(0)} ARS por $_usuarioOperador.',
+                    ),
+                    backgroundColor: Colors.green.shade800,
+                    duration: const Duration(seconds: 4),
+                  ),
+                );
+
+                // Si venía desde el flujo de venta, abre la pasarela de cobro
+                if (esCobroAutomatico) {
+                  _mostrarDialogoCobro();
+                }
+              }
+            },
+            child: const Text(
+              'Abrir Caja y Continuar',
+              style: TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 🚪 COBRO Y IMPACTO EN FIRESTORE
+  Future<void> _mostrarDialogoCobro() async {
     if (_carrito.isEmpty) return;
+
+    // Verificar si la caja está abierta antes de abrir el diálogo de cobro
+    final cajaQuery = await _firestore
+        .collection('control_cajas')
+        .where('usuario', isEqualTo: _usuarioOperador)
+        .where('estado', isEqualTo: 'Abierta')
+        .limit(1)
+        .get();
+
+    if (cajaQuery.docs.isEmpty) {
+      _mostrarDialogoAperturaCajaDirecta(esCobroAutomatico: true);
+      return;
+    }
+
     String medioPagoSeleccionado = 'Efectivo ARS';
+
+    if (!mounted) return;
 
     showDialog(
       context: context,
@@ -807,14 +961,79 @@ class _PosCajaPageState extends State<PosCajaPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    _mesaSeleccionadaNombre == null
-                        ? 'Terminal POS - Venta Directa'
-                        : 'Mesa Activa: $_mesaSeleccionadaNombre',
-                    style: const TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                    ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        _mesaSeleccionadaNombre == null
+                            ? 'Terminal POS - Venta Directa'
+                            : 'Mesa Activa: $_mesaSeleccionadaNombre',
+                        style: const TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      // 🟢 INDICADOR Y BOTÓN DE APERTURA MANUAL / ESTADO DE CAJA
+                      StreamBuilder<QuerySnapshot>(
+                        stream: _firestore
+                            .collection('control_cajas')
+                            .where('usuario', isEqualTo: _usuarioOperador)
+                            .where('estado', isEqualTo: 'Abierta')
+                            .snapshots(),
+                        builder: (context, snapshot) {
+                          final estaAbierta =
+                              snapshot.hasData &&
+                              snapshot.data!.docs.isNotEmpty;
+
+                          return ActionChip(
+                            avatar: Icon(
+                              estaAbierta
+                                  ? Icons.check_circle_rounded
+                                  : Icons.lock_clock_rounded,
+                              color: estaAbierta
+                                  ? Colors.green.shade700
+                                  : Colors.orange.shade800,
+                              size: 20,
+                            ),
+                            label: Text(
+                              estaAbierta
+                                  ? 'Caja Abierta'
+                                  : 'Abrir Caja Manual',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: estaAbierta
+                                    ? Colors.green.shade900
+                                    : Colors.orange.shade900,
+                              ),
+                            ),
+                            backgroundColor: estaAbierta
+                                ? Colors.green.shade50
+                                : Colors.orange.shade50,
+                            side: BorderSide(
+                              color: estaAbierta
+                                  ? Colors.green.shade300
+                                  : Colors.orange.shade300,
+                            ),
+                            onPressed: () {
+                              if (!estaAbierta) {
+                                _mostrarDialogoAperturaCajaDirecta(
+                                  esCobroAutomatico: false,
+                                );
+                              } else {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      'ℹ️ ESTADO CAJA: La caja ya se encuentra ABIERTA y lista para operar.',
+                                    ),
+                                    backgroundColor: Colors.blueGrey,
+                                  ),
+                                );
+                              }
+                            },
+                          );
+                        },
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 16),
                   _buildMapaMesasSalon(),
