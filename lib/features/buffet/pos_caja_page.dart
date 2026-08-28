@@ -39,6 +39,14 @@ class _PosCajaPageState extends State<PosCajaPage> {
 
   String? _mesaSeleccionadaNombre;
 
+  // 🏢 SECTOR / CAJA SELECCIONADA POR EL OPERADOR
+  String _sectorCajaSeleccionado = 'Caja Buffet & POS Central';
+  final List<String> _sectoresDisponibles = [
+    'Caja Buffet & POS Central',
+    'Caja Recepción Pádel',
+    'Caja Natatorio / Gimnasio',
+  ];
+
   double get totalCarrito {
     return _carrito.fold(
       0,
@@ -61,6 +69,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
     buffer.writeln('📄 *COMPROBANTE DE PAGO - OQUA CLUB DEPORTIVO*');
     buffer.writeln('----------------------------------------');
     buffer.writeln('👤 *Cliente:* $nombreCliente');
+    buffer.writeln('📍 *Punto de Venta:* $_sectorCajaSeleccionado');
     buffer.writeln('💳 *Medio de Pago:* $medioPago');
     buffer.writeln(
       '📅 *Fecha:* ${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}',
@@ -116,11 +125,11 @@ class _PosCajaPageState extends State<PosCajaPage> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Row(
+        title: Row(
           children: [
-            Icon(Icons.lock_rounded, color: Colors.red, size: 28),
-            SizedBox(width: 10),
-            Text('Cierre de Caja & Consolidado'),
+            const Icon(Icons.lock_rounded, color: Colors.red, size: 28),
+            const SizedBox(width: 10),
+            Text('Cierre: $_sectorCajaSeleccionado'),
           ],
         ),
         content: SizedBox(
@@ -136,7 +145,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
                 ),
                 const Divider(),
                 const Text(
-                  'Resumen de Recaudación:',
+                  'Resumen de Recaudación del Sector:',
                   style: TextStyle(fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 8),
@@ -235,9 +244,9 @@ class _PosCajaPageState extends State<PosCajaPage> {
 
               if (mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
+                  SnackBar(
                     content: Text(
-                      '🔒 CAJA CERRADA: Reporte consolidado procesado.',
+                      '🔒 CAJA CERRADA: Resumen emitido para $_sectorCajaSeleccionado.',
                     ),
                     backgroundColor: Colors.red,
                   ),
@@ -300,6 +309,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
     final buffer = StringBuffer();
     buffer.writeln('📊 *REPORTE CONSOLIDADO - CIERRE DE CAJA*');
     buffer.writeln('----------------------------------------');
+    buffer.writeln('📍 *Sector:* $_sectorCajaSeleccionado');
     buffer.writeln('👤 *Operador:* $operador');
     buffer.writeln(
       '📅 *Fecha:* ${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year} ${DateTime.now().hour}:${DateTime.now().minute} hs',
@@ -797,7 +807,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
     );
   }
 
-  // 🔑 DIÁLOGO DE APERTURA MANUAL / AUTOMÁTICA DE CAJA
+  // 🔑 DIÁLOGO DE APERTURA MANUAL / AUTOMÁTICA DE CAJA POR SECTOR
   void _mostrarDialogoAperturaCajaDirecta({bool esCobroAutomatico = false}) {
     final TextEditingController montoInicialCtrl = TextEditingController(
       text: '0',
@@ -820,8 +830,8 @@ class _PosCajaPageState extends State<PosCajaPage> {
             const SizedBox(width: 10),
             Text(
               esCobroAutomatico
-                  ? 'Caja Cerrada - Abrir Jornada'
-                  : 'Apertura Manual de Caja',
+                  ? 'Apertura: $_sectorCajaSeleccionado'
+                  : 'Apertura de Caja',
             ),
           ],
         ),
@@ -830,9 +840,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              esCobroAutomatico
-                  ? 'No hay una caja abierta para registrar cobros. Ingresá el monto inicial en efectivo para abrir la caja ahora:'
-                  : 'Ingresá el saldo inicial en efectivo para abrir la caja del operador ($nombreOperador):',
+              'Ingresá el saldo inicial en efectivo para habilitar la caja en $_sectorCajaSeleccionado (Operador: $nombreOperador):',
             ),
             const SizedBox(height: 16),
             TextField(
@@ -860,9 +868,9 @@ class _PosCajaPageState extends State<PosCajaPage> {
                   double.tryParse(montoInicialCtrl.text) ?? 0.0;
 
               await _firestore.collection('control_cajas').add({
+                'sector': _sectorCajaSeleccionado,
                 'usuario': nombreOperador,
-                'usuarioUid':
-                    userActual?.uid ?? 'anonimo', // 🛡️ VINCULACIÓN ÚNICA
+                'usuarioUid': userActual?.uid ?? 'anonimo',
                 'fechaApertura': DateTime.now(),
                 'montoInicialARS': montoInicial,
                 'estado': 'Abierta',
@@ -880,7 +888,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text(
-                      '🟢 CAJA ABIERTA: Jornada iniciada con \$${montoInicial.toStringAsFixed(0)} ARS por $nombreOperador.',
+                      '🟢 CAJA ABIERTA: $_sectorCajaSeleccionado iniciada con \$${montoInicial.toStringAsFixed(0)} ARS por $nombreOperador.',
                     ),
                     backgroundColor: Colors.green.shade800,
                     duration: const Duration(seconds: 4),
@@ -902,15 +910,17 @@ class _PosCajaPageState extends State<PosCajaPage> {
     );
   }
 
-  // 🛡️ VERIFICAR ESTADO DE CAJA Y APLICAR BLOQUEO DE SEGURIDAD
+  // 🛡️ VERIFICAR Y PROCESAR COBRO SEGÚN SECTOR SELECCIONADO
   Future<void> _verificarYProcesarCobro() async {
     if (_carrito.isEmpty) return;
 
     final userActual = FirebaseAuth.instance.currentUser;
     final String uidActual = userActual?.uid ?? 'anonimo';
 
+    // Consulta la caja abierta en el sector que el usuario eligió
     final cajaQuery = await _firestore
         .collection('control_cajas')
+        .where('sector', isEqualTo: _sectorCajaSeleccionado)
         .where('estado', isEqualTo: 'Abierta')
         .limit(1)
         .get();
@@ -925,7 +935,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
     final String uidOperadorCaja = dataCaja['usuarioUid'] ?? '';
     final String nombreOperadorCaja = dataCaja['usuario'] ?? 'Otro operador';
 
-    // BLOQUEO DE SEGURIDAD
+    // SI LA CAJA DEL SECTOR SELECCIONADO ESTÁ TOMADA POR OTRO OPERADOR
     if (uidOperadorCaja != uidActual) {
       if (mounted) {
         showDialog(
@@ -935,7 +945,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
               children: [
                 Icon(Icons.gpp_bad_rounded, color: Colors.red, size: 28),
                 SizedBox(width: 10),
-                Text('Caja Bloqueada por Seguridad'),
+                Text('Sector Bloqueado'),
               ],
             ),
             content: Column(
@@ -943,7 +953,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'La caja actual se encuentra tomada por el usuario:\n👤 $nombreOperadorCaja',
+                  '$_sectorCajaSeleccionado está siendo operada por:\n👤 $nombreOperadorCaja',
                   style: const TextStyle(
                     fontWeight: FontWeight.bold,
                     fontSize: 15,
@@ -951,7 +961,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
                 ),
                 const SizedBox(height: 12),
                 const Text(
-                  'No podés procesar cobros hasta que el operador actual realice el cierre de caja o te transfiera el turno.',
+                  'Podés seleccionar otro sector disponible en el menú desplegable superior o solicitar el cierre de turno.',
                   style: TextStyle(color: Colors.black87, fontSize: 13),
                 ),
               ],
@@ -963,7 +973,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
                 ),
                 onPressed: () => Navigator.pop(ctx),
                 child: const Text(
-                  'Entendido',
+                  'Cambiar de Sector',
                   style: TextStyle(color: Colors.white),
                 ),
               ),
@@ -987,7 +997,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setModalState) => AlertDialog(
-          title: const Text('Procesar Cobro'),
+          title: Text('Procesar Cobro: $_sectorCajaSeleccionado'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -1064,14 +1074,15 @@ class _PosCajaPageState extends State<PosCajaPage> {
   Future<void> _procesarVentaFirestore(String medio) async {
     final cajaQuery = await _firestore
         .collection('control_cajas')
+        .where('sector', isEqualTo: _sectorCajaSeleccionado)
         .where('estado', isEqualTo: 'Abierta')
         .limit(1)
         .get();
 
     if (cajaQuery.docs.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('⚠️ Abrí la caja antes de procesar cobros.'),
+        SnackBar(
+          content: Text('⚠️ Abrí $_sectorCajaSeleccionado antes de cobros.'),
           backgroundColor: Colors.red,
         ),
       );
@@ -1143,6 +1154,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
       'items': _carrito,
       'total': totalCarrito,
       'medio_pago': medio,
+      'sector': _sectorCajaSeleccionado,
       'fecha': DateTime.now(),
       'socio_id': _socioSeleccionadoId,
       'origen_salón': _mesaSeleccionadaNombre ?? 'Mostrador Directo',
@@ -1159,7 +1171,8 @@ class _PosCajaPageState extends State<PosCajaPage> {
         'fecha': DateTime.now(),
         'tipo': 'Consumo POS',
         'monto': -totalCarrito,
-        'detalle': 'Consumo asignado a Cuenta Corriente',
+        'detalle':
+            'Consumo asignado a Cuenta Corriente ($_sectorCajaSeleccionado)',
       });
 
       DocumentReference socioRef = _firestore
@@ -1337,19 +1350,39 @@ class _PosCajaPageState extends State<PosCajaPage> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text(
-                        _mesaSeleccionadaNombre == null
-                            ? 'Terminal POS - Venta Directa'
-                            : 'Mesa Activa: $_mesaSeleccionadaNombre',
-                        style: const TextStyle(
-                          fontSize: 24,
-                          fontWeight: FontWeight.bold,
+                      // 🏢 SELECTOR DE SECTOR / PUNTO DE VENTA DE CAJA
+                      DropdownButton<String>(
+                        value: _sectorCajaSeleccionado,
+                        icon: const Icon(
+                          Icons.arrow_drop_down_circle_outlined,
+                          color: Color(0xFF0F172A),
                         ),
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF0F172A),
+                        ),
+                        underline: Container(),
+                        onChanged: (String? nuevoSector) {
+                          if (nuevoSector != null) {
+                            setState(
+                              () => _sectorCajaSeleccionado = nuevoSector,
+                            );
+                          }
+                        },
+                        items: _sectoresDisponibles.map((String sector) {
+                          return DropdownMenuItem<String>(
+                            value: sector,
+                            child: Text(sector),
+                          );
+                        }).toList(),
                       ),
-                      // 🛡️ CHIP DE ESTADO CON BLOQUEO DE SEGURIDAD
+
+                      // 🛡️ CHIP DE ESTADO DINÁMICO DE LA CAJA SELECCIONADA
                       StreamBuilder<QuerySnapshot>(
                         stream: _firestore
                             .collection('control_cajas')
+                            .where('sector', isEqualTo: _sectorCajaSeleccionado)
                             .where('estado', isEqualTo: 'Abierta')
                             .snapshots(),
                         builder: (context, snapshot) {
@@ -1371,11 +1404,11 @@ class _PosCajaPageState extends State<PosCajaPage> {
                                 data['usuario'] ?? 'Operador';
 
                             if (uidCaja == userActual?.uid) {
-                              textoEstado = 'Caja Abierta (Tu Turno)';
+                              textoEstado = 'Abierta (Tu Turno)';
                               colorEstado = Colors.green;
                               esMiCaja = true;
                             } else {
-                              textoEstado = 'Bloqueada por: $operadorNombre';
+                              textoEstado = 'Bloqueada: $operadorNombre';
                               colorEstado = Colors.red;
                             }
                           }
@@ -1411,7 +1444,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
                                   snapshot.data!.docs.first,
                                 );
                               } else {
-                                _verificarYProcesarCobro(); // Muestra el mensaje de bloqueo
+                                _verificarYProcesarCobro(); // Levanta el cuadro emergente informando el bloqueo
                               }
                             },
                           );
