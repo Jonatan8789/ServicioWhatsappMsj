@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart' as cloud_functions;
 import 'package:http/http.dart' as http;
 import 'producto_buffet_model.dart';
@@ -37,7 +38,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
   bool _buscandoReservas = false;
 
   String? _mesaSeleccionadaNombre;
-  final String _usuarioOperador = "Administrador Central";
 
   double get totalCarrito {
     return _carrito.fold(
@@ -110,6 +110,8 @@ class _PosCajaPageState extends State<PosCajaPage> {
     final double totalGeneralRecaudado =
         efecARS + mp + debito + credito + trans;
     final TextEditingController obsCtrl = TextEditingController();
+    final String operadorActual =
+        dataCaja['usuario'] ?? 'Administrador Central';
 
     showDialog(
       context: context,
@@ -129,7 +131,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  'Operador: $_usuarioOperador',
+                  'Operador: $operadorActual',
                   style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
                 const Divider(),
@@ -218,7 +220,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
               if (_socioSeleccionadoPOS?['telefono'] != null) {
                 await _enviarReporteConsolidadoWhatsApp(
                   telefono: _socioSeleccionadoPOS!['telefono'],
-                  operador: _usuarioOperador,
+                  operador: operadorActual,
                   montoInicial: inicial,
                   efectivoARS: efecARS,
                   efectivoUSD: efecUSD,
@@ -800,6 +802,9 @@ class _PosCajaPageState extends State<PosCajaPage> {
     final TextEditingController montoInicialCtrl = TextEditingController(
       text: '0',
     );
+    final userActual = FirebaseAuth.instance.currentUser;
+    final String nombreOperador =
+        userActual?.displayName ?? userActual?.email ?? 'Administrador Central';
 
     showDialog(
       context: context,
@@ -827,7 +832,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
             Text(
               esCobroAutomatico
                   ? 'No hay una caja abierta para registrar cobros. Ingresá el monto inicial en efectivo para abrir la caja ahora:'
-                  : 'Ingresá el saldo inicial en efectivo para abrir la caja del operador ($_usuarioOperador):',
+                  : 'Ingresá el saldo inicial en efectivo para abrir la caja del operador ($nombreOperador):',
             ),
             const SizedBox(height: 16),
             TextField(
@@ -855,7 +860,9 @@ class _PosCajaPageState extends State<PosCajaPage> {
                   double.tryParse(montoInicialCtrl.text) ?? 0.0;
 
               await _firestore.collection('control_cajas').add({
-                'usuario': _usuarioOperador,
+                'usuario': nombreOperador,
+                'usuarioUid':
+                    userActual?.uid ?? 'anonimo', // 🛡️ VINCULACIÓN ÚNICA
                 'fechaApertura': DateTime.now(),
                 'montoInicialARS': montoInicial,
                 'estado': 'Abierta',
@@ -873,7 +880,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text(
-                      '🟢 CAJA ABIERTA: Jornada iniciada con \$${montoInicial.toStringAsFixed(0)} ARS por $_usuarioOperador.',
+                      '🟢 CAJA ABIERTA: Jornada iniciada con \$${montoInicial.toStringAsFixed(0)} ARS por $nombreOperador.',
                     ),
                     backgroundColor: Colors.green.shade800,
                     duration: const Duration(seconds: 4),
@@ -895,13 +902,15 @@ class _PosCajaPageState extends State<PosCajaPage> {
     );
   }
 
-  // 🚪 COBRO Y IMPACTO EN FIRESTORE
-  Future<void> _mostrarDialogoCobro() async {
+  // 🛡️ VERIFICAR ESTADO DE CAJA Y APLICAR BLOQUEO DE SEGURIDAD
+  Future<void> _verificarYProcesarCobro() async {
     if (_carrito.isEmpty) return;
+
+    final userActual = FirebaseAuth.instance.currentUser;
+    final String uidActual = userActual?.uid ?? 'anonimo';
 
     final cajaQuery = await _firestore
         .collection('control_cajas')
-        .where('usuario', isEqualTo: _usuarioOperador)
         .where('estado', isEqualTo: 'Abierta')
         .limit(1)
         .get();
@@ -911,6 +920,65 @@ class _PosCajaPageState extends State<PosCajaPage> {
       return;
     }
 
+    final docCaja = cajaQuery.docs.first;
+    final dataCaja = docCaja.data();
+    final String uidOperadorCaja = dataCaja['usuarioUid'] ?? '';
+    final String nombreOperadorCaja = dataCaja['usuario'] ?? 'Otro operador';
+
+    // BLOQUEO DE SEGURIDAD
+    if (uidOperadorCaja != uidActual) {
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.gpp_bad_rounded, color: Colors.red, size: 28),
+                SizedBox(width: 10),
+                Text('Caja Bloqueada por Seguridad'),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'La caja actual se encuentra tomada por el usuario:\n👤 $nombreOperadorCaja',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'No podés procesar cobros hasta que el operador actual realice el cierre de caja o te transfiera el turno.',
+                  style: TextStyle(color: Colors.black87, fontSize: 13),
+                ),
+              ],
+            ),
+            actions: [
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF0F172A),
+                ),
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text(
+                  'Entendido',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        );
+      }
+      return;
+    }
+
+    _mostrarDialogoCobro();
+  }
+
+  // 🚪 COBRO Y IMPACTO EN FIRESTORE
+  Future<void> _mostrarDialogoCobro() async {
     String medioPagoSeleccionado = 'Efectivo ARS';
 
     if (!mounted) return;
@@ -996,7 +1064,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
   Future<void> _procesarVentaFirestore(String medio) async {
     final cajaQuery = await _firestore
         .collection('control_cajas')
-        .where('usuario', isEqualTo: _usuarioOperador)
         .where('estado', isEqualTo: 'Abierta')
         .limit(1)
         .get();
@@ -1279,55 +1346,72 @@ class _PosCajaPageState extends State<PosCajaPage> {
                           fontWeight: FontWeight.bold,
                         ),
                       ),
+                      // 🛡️ CHIP DE ESTADO CON BLOQUEO DE SEGURIDAD
                       StreamBuilder<QuerySnapshot>(
                         stream: _firestore
                             .collection('control_cajas')
-                            .where('usuario', isEqualTo: _usuarioOperador)
                             .where('estado', isEqualTo: 'Abierta')
                             .snapshots(),
                         builder: (context, snapshot) {
-                          final estaAbierta =
+                          final userActual = FirebaseAuth.instance.currentUser;
+                          final bool hayCajaAbierta =
                               snapshot.hasData &&
                               snapshot.data!.docs.isNotEmpty;
 
+                          String textoEstado = 'Caja Cerrada';
+                          Color colorEstado = Colors.orange;
+                          bool esMiCaja = false;
+
+                          if (hayCajaAbierta) {
+                            final data =
+                                snapshot.data!.docs.first.data()
+                                    as Map<String, dynamic>;
+                            final uidCaja = data['usuarioUid'];
+                            final operadorNombre =
+                                data['usuario'] ?? 'Operador';
+
+                            if (uidCaja == userActual?.uid) {
+                              textoEstado = 'Caja Abierta (Tu Turno)';
+                              colorEstado = Colors.green;
+                              esMiCaja = true;
+                            } else {
+                              textoEstado = 'Bloqueada por: $operadorNombre';
+                              colorEstado = Colors.red;
+                            }
+                          }
+
                           return ActionChip(
                             avatar: Icon(
-                              estaAbierta
-                                  ? Icons.check_circle_rounded
+                              hayCajaAbierta
+                                  ? (esMiCaja
+                                        ? Icons.check_circle_rounded
+                                        : Icons.lock_rounded)
                                   : Icons.lock_clock_rounded,
-                              color: estaAbierta
-                                  ? Colors.green.shade700
-                                  : Colors.orange.shade800,
+                              color: colorEstado,
                               size: 20,
                             ),
                             label: Text(
-                              estaAbierta
-                                  ? 'Caja Abierta (Cerrar)'
-                                  : 'Abrir Caja Manual',
+                              textoEstado,
                               style: TextStyle(
                                 fontWeight: FontWeight.bold,
-                                color: estaAbierta
-                                    ? Colors.green.shade900
-                                    : Colors.orange.shade900,
+                                color: colorEstado,
                               ),
                             ),
-                            backgroundColor: estaAbierta
-                                ? Colors.green.shade50
-                                : Colors.orange.shade50,
+                            backgroundColor: colorEstado.withOpacity(0.1),
                             side: BorderSide(
-                              color: estaAbierta
-                                  ? Colors.green.shade300
-                                  : Colors.orange.shade300,
+                              color: colorEstado.withOpacity(0.3),
                             ),
                             onPressed: () {
-                              if (!estaAbierta) {
+                              if (!hayCajaAbierta) {
                                 _mostrarDialogoAperturaCajaDirecta(
                                   esCobroAutomatico: false,
                                 );
-                              } else {
+                              } else if (esMiCaja) {
                                 _mostrarDialogoCierreCaja(
                                   snapshot.data!.docs.first,
                                 );
+                              } else {
+                                _verificarYProcesarCobro(); // Muestra el mensaje de bloqueo
                               }
                             },
                           );
@@ -1550,7 +1634,9 @@ class _PosCajaPageState extends State<PosCajaPage> {
                       backgroundColor: const Color(0xFF0F172A),
                       minimumSize: const Size.fromHeight(50),
                     ),
-                    onPressed: _carrito.isEmpty ? null : _mostrarDialogoCobro,
+                    onPressed: _carrito.isEmpty
+                        ? null
+                        : _verificarYProcesarCobro,
                     child: const Text(
                       'Cobrar Venta',
                       style: TextStyle(color: Colors.white),
