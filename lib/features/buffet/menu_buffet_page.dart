@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'producto_buffet_model.dart';
-import '../inventario/inventario_general_page.dart'; // 🚀 IMPORT DEL NUEVO INVENTARIO CENTRAL
+import '../inventario/inventario_general_page.dart';
 
 class MenuBuffetPage extends StatefulWidget {
   const MenuBuffetPage({super.key});
@@ -23,6 +23,118 @@ class _MenuBuffetPageState extends State<MenuBuffetPage> {
     'Kiosco',
     'Cafetería',
   ];
+
+  // 🚀 AJUSTE MASIVO DE PRECIOS POR PORCENTAJE
+  void _mostrarDialogoAjusteMasivo() {
+    String catSeleccionada = 'Bebidas';
+    final porcentajeCtrl = TextEditingController(text: '10');
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setModalState) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.trending_up_rounded, color: Colors.indigo),
+              SizedBox(width: 8),
+              Text('Ajuste Masivo de Precios'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Incrementá o reducí los precios de venta al público de toda una categoría:',
+                style: TextStyle(fontSize: 13, color: Colors.blueGrey),
+              ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                value: catSeleccionada,
+                decoration: const InputDecoration(
+                  labelText: 'Categoría a modificar',
+                  border: OutlineInputBorder(),
+                ),
+                items: _categorias
+                    .where((c) => c != 'Todas')
+                    .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                    .toList(),
+                onChanged: (v) => setModalState(() => catSeleccionada = v!),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: porcentajeCtrl,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Porcentaje de Variación (%)',
+                  hintText: 'Ej: 10 o -5',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.percent_rounded),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancelar'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.indigo,
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () async {
+                final double porcentaje =
+                    double.tryParse(porcentajeCtrl.text.trim()) ?? 0.0;
+                if (porcentaje == 0) return;
+
+                Navigator.pop(ctx);
+                final snapshot = await _firestore
+                    .collection('inventario_general')
+                    .where('categoria', isEqualTo: catSeleccionada)
+                    .get();
+
+                WriteBatch batch = _firestore.batch();
+                int modificados = 0;
+
+                for (var doc in snapshot.docs) {
+                  final data = doc.data();
+                  final double precioActual =
+                      (data['precioVenta'] ?? data['precio'] as num?)
+                          ?.toDouble() ??
+                      0.0;
+                  if (precioActual > 0) {
+                    final double nuevoPrecio =
+                        precioActual + (precioActual * (porcentaje / 100));
+                    batch.update(doc.reference, {
+                      'precioVenta': nuevoPrecio,
+                      'precio': nuevoPrecio,
+                    });
+                    modificados++;
+                  }
+                }
+
+                await batch.commit();
+
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        '✅ Se actualizaron $modificados artículos en $catSeleccionada ($porcentaje%).',
+                      ),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                }
+              },
+              child: const Text('Aplicar Variación'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   void _mostrarFormularioProducto([ProductoBuffetModel? producto]) {
     final formKey = GlobalKey<FormState>();
@@ -426,23 +538,28 @@ class _MenuBuffetPageState extends State<MenuBuffetPage> {
                 ),
                 onPressed: () async {
                   if (formKey.currentState!.validate()) {
+                    final int stockActualCalc = esCombo
+                        ? 0
+                        : (int.tryParse(stockCtrl.text) ?? 0);
+
                     final data = {
                       'nombre': nombreCtrl.text.trim(),
                       'descripcion': descCtrl.text.trim(),
                       'categoria': catSel,
                       'precioVenta': double.tryParse(precioCtrl.text) ?? 0.0,
+                      'precio': double.tryParse(precioCtrl.text) ?? 0.0,
                       'precioCosto':
                           double.tryParse(precioCostoCtrl.text) ?? 0.0,
-                      'stockActual': esCombo
-                          ? 0
-                          : (int.tryParse(stockCtrl.text) ?? 0),
+                      'stockActual': stockActualCalc,
                       'stockMinimo': esCombo
                           ? 0
                           : (int.tryParse(stockMinimoCtrl.text) ?? 5),
                       'codigoBarras': codBarrasCtrl.text.trim(),
                       'codigoInterno': codInternoCtrl.text.trim(),
                       'proveedorId': esCombo ? null : proveedorSeleccionadoId,
-                      'disponible': disponible,
+                      'disponible': esCombo
+                          ? disponible
+                          : (disponible && stockActualCalc > 0),
                       'esCombo': esCombo,
                       'tipoInventario': 'Buffet',
                       'componentes': esCombo
@@ -480,7 +597,6 @@ class _MenuBuffetPageState extends State<MenuBuffetPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
-      // 🚀 SOLUCIÓN 2: Botón con un contenedor Scaffold provisto de AppBar con flecha para volver
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () {
           Navigator.push(
@@ -520,17 +636,43 @@ class _MenuBuffetPageState extends State<MenuBuffetPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Gestión del Menú - Buffet',
-              style: TextStyle(
-                fontSize: 32,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF0F172A),
-              ),
-            ),
-            const Text(
-              'Administrá los costos, precios de venta, alertas de stock mínimo y combos articulados del buffet.',
-              style: TextStyle(color: Colors.grey),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Gestión del Menú - Buffet',
+                      style: TextStyle(
+                        fontSize: 32,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF0F172A),
+                      ),
+                    ),
+                    Text(
+                      'Administrá los costos, precios de venta, alertas de stock mínimo y combos articulados del buffet.',
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  ],
+                ),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.indigo,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 14,
+                    ),
+                  ),
+                  onPressed: _mostrarDialogoAjusteMasivo,
+                  icon: const Icon(Icons.trending_up_rounded, size: 18),
+                  label: const Text(
+                    'Ajuste Masivo %',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 24),
             TextField(
@@ -581,7 +723,6 @@ class _MenuBuffetPageState extends State<MenuBuffetPage> {
             const SizedBox(height: 24),
             Expanded(
               child: StreamBuilder<QuerySnapshot>(
-                // 🚀 SOLUCIÓN 1: Abrimos la consulta general para poder mapear y recuperar los registros históricos
                 stream: _firestore.collection('inventario_general').snapshots(),
                 builder: (context, snapshot) {
                   if (!snapshot.hasData) {
@@ -592,7 +733,6 @@ class _MenuBuffetPageState extends State<MenuBuffetPage> {
                     final p = ProductoBuffetModel.fromFirestore(doc);
                     final rawData = doc.data() as Map<String, dynamic>? ?? {};
 
-                    // 🔍 FILTRO FLEXIBLE: Deja pasar si es 'Buffet' O si es un ítem viejo sin la propiedad cargada
                     final bool esDeBuffet =
                         rawData['tipoInventario'] == 'Buffet' ||
                         !rawData.containsKey('tipoInventario');
@@ -628,10 +768,25 @@ class _MenuBuffetPageState extends State<MenuBuffetPage> {
                     itemCount: productos.length,
                     itemBuilder: (context, index) {
                       final prod = productos[index];
+
+                      // 📈 Cálculo de Margen Comercial %
+                      final double costo = prod.precioCosto;
+                      final double pvp = prod.precio;
+                      final double margenPorcentaje = costo > 0
+                          ? (((pvp - costo) / costo) * 100)
+                          : 0.0;
+                      final bool stockCritico =
+                          !prod.esCombo && prod.stock <= prod.stockMinimo;
+
                       return Card(
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(16),
-                          side: BorderSide(color: Colors.grey.shade200),
+                          side: BorderSide(
+                            color: stockCritico
+                                ? Colors.red.shade400
+                                : Colors.grey.shade200,
+                            width: stockCritico ? 2 : 1,
+                          ),
                         ),
                         color: Colors.white,
                         elevation: 0,
@@ -652,19 +807,25 @@ class _MenuBuffetPageState extends State<MenuBuffetPage> {
                                     decoration: BoxDecoration(
                                       color: prod.esCombo
                                           ? Colors.orange.shade100
-                                          : Colors.grey.shade100,
+                                          : (stockCritico
+                                                ? Colors.red.shade100
+                                                : Colors.grey.shade100),
                                       borderRadius: BorderRadius.circular(6),
                                     ),
                                     child: Text(
                                       prod.esCombo
                                           ? 'COMBO 🔥'
-                                          : prod.categoria,
+                                          : (stockCritico
+                                                ? 'CRÍTICO ⚠️'
+                                                : prod.categoria),
                                       style: TextStyle(
                                         fontSize: 10,
                                         fontWeight: FontWeight.bold,
                                         color: prod.esCombo
                                             ? Colors.orange.shade900
-                                            : Colors.blueGrey,
+                                            : (stockCritico
+                                                  ? Colors.red.shade900
+                                                  : Colors.blueGrey),
                                       ),
                                     ),
                                   ),
@@ -689,19 +850,32 @@ class _MenuBuffetPageState extends State<MenuBuffetPage> {
                                 overflow: TextOverflow.ellipsis,
                               ),
                               const SizedBox(height: 4),
-                              Text(
-                                prod.esCombo
-                                    ? 'Contiene: ${prod.componentes.length} artículos'
-                                    : 'Stock: ${prod.stock} un.',
-                                style: TextStyle(
-                                  color:
-                                      !prod.esCombo &&
-                                          prod.stock <= prod.stockMinimo
-                                      ? Colors.red
-                                      : Colors.blueGrey,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                ),
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    prod.esCombo
+                                        ? 'Contiene: ${prod.componentes.length} arts.'
+                                        : 'Stock: ${prod.stock} un.',
+                                    style: TextStyle(
+                                      color: stockCritico
+                                          ? Colors.red.shade700
+                                          : Colors.blueGrey,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  if (margenPorcentaje > 0)
+                                    Text(
+                                      'Margen: +${margenPorcentaje.toStringAsFixed(0)}%',
+                                      style: const TextStyle(
+                                        color: Colors.teal,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                ],
                               ),
                               const SizedBox(height: 8),
                               Row(

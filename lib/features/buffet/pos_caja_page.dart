@@ -1030,7 +1030,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
                 },
               ),
               const SizedBox(height: 16),
-              // 🧾 REINCORPORACIÓN DE COMPROBANTE FISCAL VS TICKET X
               SwitchListTile(
                 title: Text(
                   _emitirFacturaFiscal
@@ -1076,6 +1075,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
     );
   }
 
+  // 🔄 PROCESAMIENTO CON DESCUENTO DE STOCK DINÁMICO POR RECETA / COMBOS
   Future<void> _procesarVentaFirestore(String medio) async {
     final cajaQuery = await _firestore
         .collection('control_cajas')
@@ -1102,6 +1102,10 @@ class _PosCajaPageState extends State<PosCajaPage> {
     final Map<String, dynamic>? datosSocioActual = _socioSeleccionadoPOS;
 
     for (var item in _carrito) {
+      final String itemId = item['id'];
+      final int cantidadComprada = item['cantidad'] ?? 1;
+
+      // 1. Matrícula
       if (item['esMatricula'] == true && _socioSeleccionadoId != null) {
         DocumentReference matRef = _firestore
             .collection('socios')
@@ -1122,6 +1126,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
         });
       }
 
+      // 2. Cuota Social
       if (item['esCuotaSocial'] == true && _socioSeleccionadoId != null) {
         DocumentReference cuotaPagaRef = _firestore
             .collection('socios')
@@ -1139,6 +1144,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
         batch.update(socioRef, {'ultimoMesPago': item['mesPeriodo']});
       }
 
+      // 3. Reserva / Turno Pendiente
       if (item['origen_pendiente_id'] != null) {
         DocumentReference resRef = _firestore
             .collection('ventas_pendientes')
@@ -1147,6 +1153,49 @@ class _PosCajaPageState extends State<PosCajaPage> {
           'estado': 'Cobrado',
           'fechaCobro': DateTime.now(),
         });
+      }
+
+      // 🍔 4. DESCUENTO DE STOCK DINÁMICO (PRODUCTO SIMPLE O COMBO / RECETA)
+      if (item['es_producto_fisico'] == true && itemId.isNotEmpty) {
+        final prodDoc = await _firestore
+            .collection('inventario_general')
+            .doc(itemId)
+            .get();
+        if (prodDoc.exists) {
+          final prodData = prodDoc.data() as Map<String, dynamic>;
+          final bool esComboReceta = prodData['esCombo'] == true;
+          final List<dynamic> componentes = prodData['componentes'] ?? [];
+
+          if (esComboReceta && componentes.isNotEmpty) {
+            // 🔄 DESCUENTO DINÁMICO DE CADA INSUMO / RECETA
+            for (var comp in componentes) {
+              final String subProdId = comp['productoId'] ?? '';
+              final int cantComponente =
+                  (comp['cantidad'] as num?)?.toInt() ?? 1;
+              if (subProdId.isNotEmpty) {
+                final int totalBajaInsumo = cantComponente * cantidadComprada;
+                DocumentReference subProdRef = _firestore
+                    .collection('inventario_general')
+                    .doc(subProdId);
+                batch.update(subProdRef, {
+                  'stockActual': FieldValue.increment(-totalBajaInsumo),
+                });
+              }
+            }
+          } else {
+            // 📦 DESCUENTO DE ARTÍCULO INDIVIDUAL DIRECTO
+            DocumentReference prodRef = _firestore
+                .collection('inventario_general')
+                .doc(itemId);
+            batch.update(prodRef, {
+              'stockActual': FieldValue.increment(-cantidadComprada),
+            });
+          }
+
+          // Guardar metadatos en el ítem del carrito para la comanda de cocina
+          item['requiereCocina'] = prodData['requiereCocina'] ?? false;
+          item['componentes'] = componentes;
+        }
       }
     }
 
@@ -1179,6 +1228,9 @@ class _PosCajaPageState extends State<PosCajaPage> {
       'origen_salón': _mesaSeleccionadaNombre ?? 'Mostrador Directo',
       'fiscalizado': _emitirFacturaFiscal && caeFactura != null,
       'cae': caeFactura ?? (_emitirFacturaFiscal ? 'ERROR_CAE' : 'NO_FISCAL_X'),
+      'estadoCocina': _carrito.any((it) => it['requiereCocina'] == true)
+          ? 'Pendiente'
+          : 'Entregado',
     });
 
     if (medio == 'Cuenta Corriente' && _socioSeleccionadoId != null) {

@@ -27,11 +27,11 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
     _obtenerTraduccionHorario();
   }
 
-  // 🕒 Traduce la ID "tarde 6" o idBloqueHorario al rango "Desde - Hasta"
   Future<void> _obtenerTraduccionHorario() async {
     final String bloqueId = widget.socio.idBloqueHorario;
     if (bloqueId.isEmpty) {
-      if (mounted) setState(() => _etiquetaHorarioTraduccion = 'Sin horario asignado');
+      if (mounted)
+        setState(() => _etiquetaHorarioTraduccion = 'Sin horario asignado');
       return;
     }
 
@@ -53,7 +53,8 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
 
             if (mounted) {
               setState(() {
-                _etiquetaHorarioTraduccion = desde.isNotEmpty && hasta.isNotEmpty
+                _etiquetaHorarioTraduccion =
+                    desde.isNotEmpty && hasta.isNotEmpty
                     ? '$nombre ($desde hs a $hasta hs)'
                     : (nombre.isNotEmpty ? nombre : bloqueId);
               });
@@ -72,7 +73,9 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
   Future<void> _abrirAptoMedico(BuildContext context) async {
     if (widget.socio.aptoUrl.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Este socio no posee apto físico adjunto.')),
+        const SnackBar(
+          content: Text('Este socio no posee apto físico adjunto.'),
+        ),
       );
       return;
     }
@@ -115,9 +118,9 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
           .collection('socios')
           .doc(widget.socio.id)
           .update({
-        'matriculaAlDia': true,
-        'fechaPagoMatricula': Timestamp.fromDate(fechaSeleccionada),
-      });
+            'matriculaAlDia': true,
+            'fechaPagoMatricula': Timestamp.fromDate(fechaSeleccionada),
+          });
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -139,7 +142,7 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
     final bool aptoValido =
         widget.socio.vencimientoAptoMedico != null &&
         widget.socio.vencimientoAptoMedico!.isAfter(hoy);
-    final bool tieneHuellaDigital = false;
+    final bool tieneHuellaDigital = widget.socio.huellaHash.isNotEmpty;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
@@ -165,7 +168,10 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
                 ),
                 const SizedBox(width: 12),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
                   decoration: BoxDecoration(
                     color: const Color(0xFFF1F5F9),
                     borderRadius: BorderRadius.circular(6),
@@ -200,7 +206,7 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
                         padding: const EdgeInsets.all(32.0),
                         child: Column(
                           children: [
-                            // 📸 FOTO CON RECONOCIMIENTO Y CARGA SEGURA
+                            // 📸 FOTO CON CONTROL DE CARGA Y FALLBACK
                             CircleAvatar(
                               radius: 75,
                               backgroundColor: Colors.teal.withOpacity(0.1),
@@ -212,11 +218,18 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
                                         width: 150,
                                         height: 150,
                                         fit: BoxFit.cover,
-                                        errorBuilder: (_, __, ___) => const Icon(
-                                          Icons.person,
-                                          size: 70,
-                                          color: Colors.teal,
-                                        ),
+                                        loadingBuilder: (context, child, progress) {
+                                          if (progress == null) return child;
+                                          return const CircularProgressIndicator(
+                                            color: Colors.teal,
+                                          );
+                                        },
+                                        errorBuilder: (_, __, ___) =>
+                                            const Icon(
+                                              Icons.person,
+                                              size: 70,
+                                              color: Colors.teal,
+                                            ),
                                       ),
                                     )
                                   : const Icon(
@@ -247,7 +260,9 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
                               widget.socio.matriculaAlDia
                                   ? 'Al día (${widget.socio.fechaPagoMatricula != null ? DateFormat('dd/MM/yy').format(widget.socio.fechaPagoMatricula!) : 'S/D'})'
                                   : 'PENDIENTE',
-                              widget.socio.matriculaAlDia ? Colors.green : Colors.red,
+                              widget.socio.matriculaAlDia
+                                  ? Colors.green
+                                  : Colors.red,
                             ),
                             const SizedBox(height: 12),
                             _buildEstadoFicha(
@@ -279,13 +294,17 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
                               OutlinedButton.icon(
                                 style: OutlinedButton.styleFrom(
                                   foregroundColor: Colors.amber.shade900,
-                                  side: BorderSide(color: Colors.amber.shade400),
+                                  side: BorderSide(
+                                    color: Colors.amber.shade400,
+                                  ),
                                 ),
                                 icon: const Icon(
                                   Icons.history_toggle_off_rounded,
                                   size: 18,
                                 ),
-                                label: const Text('Indicar Pago Previo Matrícula'),
+                                label: const Text(
+                                  'Indicar Pago Previo Matrícula',
+                                ),
                                 onPressed: _registrarMatriculaPrevio,
                               ),
                             ],
@@ -361,7 +380,6 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
                                     : 'No aplica',
                                 Icons.school_outlined,
                               ),
-                              // 🕒 MOSTRAR TRADUCCIÓN DE HORARIOS
                               _buildDatoItem(
                                 'Bloque Horario',
                                 _etiquetaHorarioTraduccion,
@@ -410,7 +428,9 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
                                       Icons.file_present_rounded,
                                       size: 18,
                                     ),
-                                    label: const Text('Ver Adjunto Apto Físico'),
+                                    label: const Text(
+                                      'Ver Adjunto Apto Físico',
+                                    ),
                                     onPressed: () => _abrirAptoMedico(context),
                                   ),
                                 ),
@@ -431,52 +451,52 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
   }
 
   Widget _buildSeccionTitulo(String t) => Text(
-        t,
-        style: const TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.bold,
-          color: Color(0xFF0A3B43),
-        ),
-      );
+    t,
+    style: const TextStyle(
+      fontSize: 16,
+      fontWeight: FontWeight.bold,
+      color: Color(0xFF0A3B43),
+    ),
+  );
 
   Widget _buildDatoItem(String e, String v, IconData i) => Expanded(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(e, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+        const SizedBox(height: 4),
+        Row(
           children: [
-            Text(e, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-            const SizedBox(height: 4),
-            Row(
-              children: [
-                Icon(i, size: 18, color: Colors.blueGrey),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    v,
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
+            Icon(i, size: 18, color: Colors.blueGrey),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                v,
+                style: const TextStyle(fontWeight: FontWeight.bold),
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
           ],
         ),
-      );
+      ],
+    ),
+  );
 
   Widget _buildEstadoFicha(String t, String v, Color c) => Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(t, style: const TextStyle(fontSize: 13, color: Colors.blueGrey)),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: c.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Text(
-              v,
-              style: TextStyle(color: c, fontWeight: FontWeight.bold, fontSize: 12),
-            ),
-          ),
-        ],
-      );
+    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    children: [
+      Text(t, style: const TextStyle(fontSize: 13, color: Colors.blueGrey)),
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: c.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Text(
+          v,
+          style: TextStyle(color: c, fontWeight: FontWeight.bold, fontSize: 12),
+        ),
+      ),
+    ],
+  );
 }

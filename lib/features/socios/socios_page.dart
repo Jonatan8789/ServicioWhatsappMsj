@@ -32,7 +32,7 @@ class _SociosPageState extends State<SociosPage> {
       builder: (context) => PlanPagoDialog(socio: socio),
     );
     if (res == true) {
-      setState(() {}); // Actualiza la lista si se formalizó un plan
+      setState(() {});
     }
   }
 
@@ -45,7 +45,6 @@ class _SociosPageState extends State<SociosPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // CABECERA: TÍTULO Y BOTÓN DE ALTA
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -90,7 +89,6 @@ class _SociosPageState extends State<SociosPage> {
           ),
           const SizedBox(height: 30),
 
-          // BARRA DE BÚSQUEDA
           TextField(
             decoration: InputDecoration(
               hintText: 'Buscar por Nombre, DNI o Número de Socio...',
@@ -110,7 +108,6 @@ class _SociosPageState extends State<SociosPage> {
           ),
           const SizedBox(height: 20),
 
-          // LISTA DE SOCIOS (STREAMBUILDER)
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
               stream: FirebaseFirestore.instance
@@ -155,7 +152,6 @@ class _SociosPageState extends State<SociosPage> {
                         socio.vencimientoAptoMedico != null &&
                         socio.vencimientoAptoMedico!.isAfter(hoy);
 
-                    // Valida si el socio posee alguna deuda pendiente
                     final bool tieneDeuda = socio.saldoCuentaCorriente != 0;
 
                     return Card(
@@ -351,8 +347,6 @@ class _SociosPageState extends State<SociosPage> {
                               ),
                             ),
                             const SizedBox(width: 12),
-
-                            // 🤝 BOTÓN REFINANCIACIÓN (SOLO SI TIENE DEUDA)
                             if (tieneDeuda)
                               IconButton(
                                 icon: const Icon(
@@ -364,7 +358,6 @@ class _SociosPageState extends State<SociosPage> {
                                 onPressed: () =>
                                     _abrirRefinanciacionSocio(socio),
                               ),
-
                             IconButton(
                               icon: const Icon(
                                 Icons.visibility_rounded,
@@ -373,7 +366,6 @@ class _SociosPageState extends State<SociosPage> {
                               tooltip: 'Ver Ficha',
                               onPressed: () => widget.onVerSocio(socio),
                             ),
-
                             IconButton(
                               icon: const Icon(
                                 Icons.attach_money_rounded,
@@ -393,7 +385,6 @@ class _SociosPageState extends State<SociosPage> {
                                 );
                               },
                             ),
-
                             if (esAdmin)
                               IconButton(
                                 icon: const Icon(

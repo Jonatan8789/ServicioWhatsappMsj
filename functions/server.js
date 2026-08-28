@@ -134,12 +134,12 @@ async function connectToWhatsApp() {
     });
 }
 
-// 📌 ENDPOINT DE SALUD (Para el ping de UptimeRobot)
+// 📌 ENDPOINT DE SALUD
 app.get('/health', (req, res) => {
     res.status(200).send('OK - Backend Baileys Activo');
 });
 
-// 📌 ENDPOINT 1: Consultar estado actual
+// 📌 ENDPOINT: Consultar estado actual
 app.get('/status', (req, res) => {
     res.json({
         connected: isConnected,
@@ -147,7 +147,51 @@ app.get('/status', (req, res) => {
     });
 });
 
-// 📌 ENDPOINT 2: Cerrar sesión y desvincular
+// 📌 ENDPOINT: Visualizar QR en navegador web
+app.get('/qr', (req, res) => {
+    if (isConnected) {
+        return res.send(`
+            <div style="font-family: sans-serif; text-align: center; margin-top: 50px;">
+                <h2>Dispositivo Conectado ✅</h2>
+                <p>El servicio de WhatsApp se encuentra autenticado y operativo.</p>
+            </div>
+        `);
+    }
+
+    if (!latestQrBase64) {
+        return res.send(`
+            <div style="font-family: sans-serif; text-align: center; margin-top: 50px;">
+                <h2>Generando Código QR...</h2>
+                <p>Por favor, aguardá unos segundos y recargá la página.</p>
+            </div>
+        `);
+    }
+
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+            <head>
+                <title>Vincular WhatsApp - OQUA Club</title>
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <style>
+                    body { font-family: system-ui, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background-color: #f8fafc; }
+                    .card { background: white; padding: 2rem; border-radius: 1rem; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); text-align: center; max-width: 360px; }
+                    img { width: 100%; max-width: 280px; height: auto; border-radius: 0.5rem; }
+                    p { color: #64748b; font-size: 0.9rem; }
+                </style>
+            </head>
+            <body>
+                <div class="card">
+                    <h2 style="color: #0f172a; margin-bottom: 0.5rem;">Vincular WhatsApp</h2>
+                    <p>Escaneá con la cámara desde <b>WhatsApp > Dispositivos vinculados</b></p>
+                    <img src="${latestQrBase64}" alt="Código QR" />
+                </div>
+            </body>
+        </html>
+    `);
+});
+
+// 📌 ENDPOINT: Cerrar sesión y desvincular
 app.post('/logout', async (req, res) => {
     try {
         if (sock) {
@@ -167,7 +211,7 @@ app.post('/logout', async (req, res) => {
     }
 });
 
-// 📌 ENDPOINT 3: Enviar mensaje de WhatsApp
+// 📌 ENDPOINT: Enviar mensaje de WhatsApp
 app.post('/send-whatsapp', async (req, res) => {
     const { phone, message } = req.body;
     if (!isConnected || !sock) {
@@ -191,3 +235,9 @@ app.listen(PORT, () => {
     console.log(`🚀 Servidor ejecutándose en el puerto ${PORT}`);
     connectToWhatsApp();
 });
+
+// Agregá esta línea al final de tu index.js:
+const notificaciones = require('./notificaciones');
+
+exports.notificarInscripcionTorneo = notificaciones.notificarInscripcionTorneo;
+exports.notificarReservaCancha = notificaciones.notificarReservaCancha;
