@@ -14,7 +14,7 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final _nombreNuevaTerminalCtrl = TextEditingController();
   bool _verPanelABM = false;
-  String? _cajaSeleccionadaId;
+  String? _terminalSeleccionadaNombre;
 
   @override
   void dispose() {
@@ -146,17 +146,37 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
     );
   }
 
-  Widget _buildDetalleCajaSeleccionada(List<DocumentSnapshot> abiertasDocs) {
-    DocumentSnapshot? docActual;
-    for (var doc in abiertasDocs) {
-      if (doc.id == _cajaSeleccionadaId) {
-        docActual = doc;
-        break;
-      }
+  // 🏪 AUDITORÍA DE VALORES DE LA TERMINAL SELECCIONADA
+  Widget _buildDetalleTerminalSeleccionada(DocumentSnapshot? docCajaAbierta) {
+    if (docCajaAbierta == null) {
+      return Container(
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          color: Colors.orange.shade50,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.orange.shade200),
+        ),
+        child: Row(
+          children: [
+            const Icon(
+              Icons.info_outline_rounded,
+              color: Colors.orange,
+              size: 28,
+            ),
+            const SizedBox(width: 12),
+            Text(
+              '$_terminalSeleccionadaNombre se encuentra actualmente CERRADA.\nNo hay una sesión activa con movimientos en tiempo real.',
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              ),
+            ),
+          ],
+        ),
+      );
     }
-    docActual ??= abiertasDocs.first;
 
-    final data = docActual.data() as Map<String, dynamic>;
+    final data = docCajaAbierta.data() as Map<String, dynamic>;
     final double tArs =
         (data['montoInicialARS'] as num?)?.toDouble() ??
         (data['totalEfectivoARS'] as num?)?.toDouble() ??
@@ -222,7 +242,7 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
           style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 12),
-        _buildListaMovimientosCaja(docActual.id),
+        _buildListaMovimientosCaja(docCajaAbierta.id),
       ],
     );
   }
@@ -512,119 +532,147 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       body: StreamBuilder<QuerySnapshot>(
-        stream: _firestore.collection('control_cajas').snapshots(),
-        builder: (context, snapshot) {
-          if (!snapshot.hasData)
-            return const Center(
-              child: CircularProgressIndicator(color: Colors.indigo),
-            );
+        stream: _firestore.collection('terminales_caja').snapshots(),
+        builder: (context, snapTerminales) {
+          return StreamBuilder<QuerySnapshot>(
+            stream: _firestore.collection('control_cajas').snapshots(),
+            builder: (context, snapSesiones) {
+              if (!snapTerminales.hasData || !snapSesiones.hasData) {
+                return const Center(
+                  child: CircularProgressIndicator(color: Colors.indigo),
+                );
+              }
 
-          final allDocs = snapshot.data!.docs;
-          final List<DocumentSnapshot> abiertasDocs = [];
-          for (var d in allDocs) {
-            if ((d.data() as Map<String, dynamic>)['estado'] == 'Abierta') {
-              abiertasDocs.add(d);
-            }
-          }
+              final terminalesDocs = snapTerminales.data!.docs;
+              final sesionesDocs = snapSesiones.data!.docs;
 
-          return SingleChildScrollView(
-            padding: const EdgeInsets.all(40.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              // Obtiene los nombres únicos de todas las cajas creadas
+              List<String> nombresTerminales = terminalesDocs
+                  .map(
+                    (doc) =>
+                        (doc.data() as Map<String, dynamic>)['nombre']
+                            as String? ??
+                        '',
+                  )
+                  .where((n) => n.isNotEmpty)
+                  .toList();
+
+              if (nombresTerminales.isEmpty) {
+                nombresTerminales = ['Caja Recepcion', 'Caja Padel'];
+              }
+
+              if (_terminalSeleccionadaNombre == null ||
+                  !nombresTerminales.contains(_terminalSeleccionadaNombre)) {
+                _terminalSeleccionadaNombre = nombresTerminales.first;
+              }
+
+              // Mapea qué cajas están abiertas actualmente en control_cajas
+              Map<String, DocumentSnapshot> cajasAbiertasMap = {};
+              for (var doc in sesionesDocs) {
+                final data = doc.data() as Map<String, dynamic>;
+                if (data['estado'] == 'Abierta') {
+                  final String nombreTerm =
+                      data['nombreCajaTerminal'] ?? 'General';
+                  cajasAbiertasMap[nombreTerm] = doc;
+                }
+              }
+
+              DocumentSnapshot? docSesionActiva =
+                  cajasAbiertasMap[_terminalSeleccionadaNombre];
+
+              return SingleChildScrollView(
+                padding: const EdgeInsets.all(40.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text(
-                          'Consola de Tesorería y Auditoría Global',
-                          style: TextStyle(
-                            fontSize: 32,
-                            fontWeight: FontWeight.w900,
-                            color: Color(0xFF0F172A),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Consola de Tesorería y Auditoría Global',
+                              style: TextStyle(
+                                fontSize: 32,
+                                fontWeight: FontWeight.w900,
+                                color: Color(0xFF0F172A),
+                              ),
+                            ),
+                            Text(
+                              'Monitoreo en tiempo real de terminales, medios de pago y desgloses financieros.',
+                              style: TextStyle(color: Colors.grey.shade600),
+                            ),
+                          ],
+                        ),
+                        ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.blue.shade700,
+                            foregroundColor: Colors.white,
+                          ),
+                          onPressed: () =>
+                              setState(() => _verPanelABM = !_verPanelABM),
+                          icon: const Icon(Icons.settings),
+                          label: Text(
+                            _verPanelABM
+                                ? 'Ocultar ABM'
+                                : 'Configurar Maestro Cajas',
                           ),
                         ),
-                        Text(
-                          'Monitoreo en tiempo real de terminales, medios de pago y desgloses financieros.',
-                          style: TextStyle(color: Colors.grey.shade600),
-                        ),
                       ],
                     ),
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.blue.shade700,
-                        foregroundColor: Colors.white,
-                      ),
-                      onPressed: () =>
-                          setState(() => _verPanelABM = !_verPanelABM),
-                      icon: const Icon(Icons.settings),
-                      label: Text(
-                        _verPanelABM
-                            ? 'Ocultar ABM'
-                            : 'Configurar Maestro Cajas',
-                      ),
+                    const SizedBox(height: 24),
+                    _buildResumenFiscalDiario(),
+                    if (_verPanelABM) ...[
+                      const SizedBox(height: 20),
+                      _buildSeccionABMTerminales(),
+                    ],
+                    const SizedBox(height: 30),
+
+                    // 🏢 SELECTOR DE TERMINALES DEL ABM CON ESTADO OPERATIVO
+                    const Text(
+                      'Seleccionar Terminal Física para Inspección de Medios de Pago:',
+                      style: TextStyle(fontWeight: FontWeight.bold),
                     ),
+                    const SizedBox(height: 8),
+                    DropdownButtonFormField<String>(
+                      value: _terminalSeleccionadaNombre,
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        contentPadding: EdgeInsets.symmetric(horizontal: 16),
+                      ),
+                      items: nombresTerminales.map((nombre) {
+                        final estaAbierta = cajasAbiertasMap.containsKey(
+                          nombre,
+                        );
+                        String textoDetalle = '$nombre - Estado: CERRADA';
+
+                        if (estaAbierta) {
+                          final dataSesion =
+                              cajasAbiertasMap[nombre]!.data()
+                                  as Map<String, dynamic>;
+                          final op = dataSesion['usuario'] ?? 'Operador';
+                          textoDetalle =
+                              '🟢 $nombre - ABIERTA (Responsable: $op)';
+                        }
+
+                        return DropdownMenuItem<String>(
+                          value: nombre,
+                          child: Text(textoDetalle),
+                        );
+                      }).toList(),
+                      onChanged: (v) =>
+                          setState(() => _terminalSeleccionadaNombre = v),
+                    ),
+                    const SizedBox(height: 24),
+                    _buildDetalleTerminalSeleccionada(docSesionActiva),
+
+                    const SizedBox(height: 40),
+                    _buildHistorialGlobalCerradas(sesionesDocs),
                   ],
                 ),
-                const SizedBox(height: 24),
-                _buildResumenFiscalDiario(),
-                if (_verPanelABM) ...[
-                  const SizedBox(height: 20),
-                  _buildSeccionABMTerminales(),
-                ],
-                const SizedBox(height: 30),
-                if (abiertasDocs.isNotEmpty) ...[
-                  const Text(
-                    'Seleccionar Terminal Activa para Inspección de Medios de Pago:',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
-                  DropdownButtonFormField<String>(
-                    value:
-                        _cajaSeleccionadaId ??
-                        (abiertasDocs.isEmpty ? null : abiertasDocs.first.id),
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      contentPadding: EdgeInsets.symmetric(horizontal: 16),
-                    ),
-                    items: abiertasDocs.map((d) {
-                      final data = d.data() as Map<String, dynamic>;
-                      return DropdownMenuItem(
-                        value: d.id,
-                        child: Text(
-                          '${data['nombreCajaTerminal'] ?? "General"} - Responsable: ${data['usuario'] ?? "Cajero"}',
-                        ),
-                      );
-                    }).toList(),
-                    onChanged: (v) => setState(() => _cajaSeleccionadaId = v),
-                  ),
-                  const SizedBox(height: 24),
-                  _buildDetalleCajaSeleccionada(abiertasDocs),
-                ] else ...[
-                  Container(
-                    padding: const EdgeInsets.all(24),
-                    decoration: BoxDecoration(
-                      color: Colors.orange.shade50,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Row(
-                      children: [
-                        Icon(Icons.warning_amber_rounded, color: Colors.orange),
-                        SizedBox(width: 12),
-                        Text(
-                          'No hay cajas operando en vivo en este momento.',
-                          style: TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 40),
-                _buildHistorialGlobalCerradas(allDocs),
-              ],
-            ),
+              );
+            },
           );
         },
       ),
