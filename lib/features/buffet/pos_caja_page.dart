@@ -38,14 +38,10 @@ class _PosCajaPageState extends State<PosCajaPage> {
   bool _buscandoReservas = false;
 
   String? _mesaSeleccionadaNombre;
+  String? _sectorCajaSeleccionado;
 
-  // 🏢 SECTOR / CAJA SELECCIONADA POR EL OPERADOR
-  String _sectorCajaSeleccionado = 'Caja Buffet & POS Central';
-  final List<String> _sectoresDisponibles = [
-    'Caja Buffet & POS Central',
-    'Caja Recepción Pádel',
-    'Caja Natatorio / Gimnasio',
-  ];
+  // 🧾 Selección de Tipo de Comprobante Fiscal en POS
+  bool _emitirFacturaFiscal = false;
 
   double get totalCarrito {
     return _carrito.fold(
@@ -61,6 +57,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
     required List<Map<String, dynamic>> items,
     required double total,
     required String medioPago,
+    String? cae,
   }) async {
     String limpio = telefono.replaceAll(RegExp(r'\D'), '');
     if (limpio.isEmpty) return;
@@ -69,8 +66,13 @@ class _PosCajaPageState extends State<PosCajaPage> {
     buffer.writeln('📄 *COMPROBANTE DE PAGO - OQUA CLUB DEPORTIVO*');
     buffer.writeln('----------------------------------------');
     buffer.writeln('👤 *Cliente:* $nombreCliente');
-    buffer.writeln('📍 *Punto de Venta:* $_sectorCajaSeleccionado');
+    buffer.writeln(
+      '📍 *Punto de Venta:* ${_sectorCajaSeleccionado ?? "General"}',
+    );
     buffer.writeln('💳 *Medio de Pago:* $medioPago');
+    buffer.writeln(
+      '🧾 *Tipo:* ${_emitirFacturaFiscal ? "Factura Fiscal ARCA (CAE: $cae)" : "Comprobante X (No Fiscal)"}',
+    );
     buffer.writeln(
       '📅 *Fecha:* ${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}',
     );
@@ -85,7 +87,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
 
     buffer.writeln('----------------------------------------');
     buffer.writeln('💰 *TOTAL ABONADO:* \$${total.toStringAsFixed(2)} ARS');
-    buffer.writeln('\n¡Muchas gracias por abonar en Oqua Club!');
+    buffer.writeln('\n¡Muchas gracias por tu compra!');
 
     try {
       await http.post(
@@ -129,7 +131,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
           children: [
             const Icon(Icons.lock_rounded, color: Colors.red, size: 28),
             const SizedBox(width: 10),
-            Text('Cierre: $_sectorCajaSeleccionado'),
+            Text('Cierre: ${_sectorCajaSeleccionado ?? "Caja"}'),
           ],
         ),
         content: SizedBox(
@@ -246,7 +248,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text(
-                      '🔒 CAJA CERRADA: Resumen emitido para $_sectorCajaSeleccionado.',
+                      '🔒 CAJA CERRADA: Resumen emitido para ${_sectorCajaSeleccionado ?? "Caja"}.',
                     ),
                     backgroundColor: Colors.red,
                   ),
@@ -289,7 +291,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
     );
   }
 
-  // 📲 ENVÍO DEL CONSOLIDADO POR WHATSAPP
   Future<void> _enviarReporteConsolidadoWhatsApp({
     required String telefono,
     required String operador,
@@ -309,7 +310,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
     final buffer = StringBuffer();
     buffer.writeln('📊 *REPORTE CONSOLIDADO - CIERRE DE CAJA*');
     buffer.writeln('----------------------------------------');
-    buffer.writeln('📍 *Sector:* $_sectorCajaSeleccionado');
+    buffer.writeln('📍 *Sector:* ${_sectorCajaSeleccionado ?? "General"}');
     buffer.writeln('👤 *Operador:* $operador');
     buffer.writeln(
       '📅 *Fecha:* ${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year} ${DateTime.now().hour}:${DateTime.now().minute} hs',
@@ -348,7 +349,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
     }
   }
 
-  // ✏️ EDICIÓN MANUAL DE PRECIO
   void _editarPrecioItem(int index) {
     final item = _carrito[index];
     final controller = TextEditingController(
@@ -376,9 +376,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
             onPressed: () {
               final nuevoMonto =
                   double.tryParse(controller.text) ?? item['precio'];
-              setState(() {
-                _carrito[index]['precio'] = nuevoMonto;
-              });
+              setState(() => _carrito[index]['precio'] = nuevoMonto);
               Navigator.pop(ctx);
             },
             child: const Text('Aplicar'),
@@ -388,7 +386,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
     );
   }
 
-  // 🔍 BUSCADOR INTELIGENTE: BÚSQUEDA DE RESERVAS PENDIENTES
   Future<void> _buscarReservasPendientes(String socioId) async {
     setState(() {
       _buscandoReservas = true;
@@ -426,7 +423,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
     });
   }
 
-  // 🔍 BUSCADOR INTELIGENTE: VERIFICACIÓN DE MATRÍCULA ANUAL
   Future<void> _verificarMatriculaAnual(String socioId) async {
     final anioActual = DateTime.now().year.toString();
 
@@ -494,7 +490,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
     }
   }
 
-  // 🔍 BUSCADOR INTELIGENTE: VERIFICACIÓN Y CARGA DE CUOTA DEL MES
   Future<TarifaModel?> _obtenerTarifaVigente({
     required String deporte,
     required String frecuencia,
@@ -574,9 +569,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Socio: ${socioData['nombre'] ?? ''}\n'
-                    '• Precio Regular: \$${precioRegular.toStringAsFixed(0)} ARS\n'
-                    '• Descuento Efectivo: \$${precioEfectivo.toStringAsFixed(0)} ARS',
+                    'Socio: ${socioData['nombre'] ?? ''}\n• Precio Regular: \$${precioRegular.toStringAsFixed(0)} ARS\n• Descuento Efectivo: \$${precioEfectivo.toStringAsFixed(0)} ARS',
                   ),
                   const SizedBox(height: 16),
                   DropdownButtonFormField<String>(
@@ -597,9 +590,8 @@ class _PosCajaPageState extends State<PosCajaPage> {
                       );
                     }).toList(),
                     onChanged: (val) {
-                      if (val != null) {
+                      if (val != null)
                         setModalState(() => periodoSeleccionado = val);
-                      }
                     },
                   ),
                 ],
@@ -640,7 +632,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
     }
   }
 
-  // 🗺️ CONTROL DE MESAS Y COMANDAS EN VIVO
   Future<void> _seleccionarMesa(
     String nombreMesa,
     Map<String, dynamic>? mesaData,
@@ -695,7 +686,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
     }
   }
 
-  // 🔍 WIDGET: BUSCADOR DE SOCIOS CON AUTOCOMPLETADO
   Widget _buildBuscadorSocios() {
     return Card(
       elevation: 0,
@@ -762,7 +752,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
         if (!snapshot.hasData) return const LinearProgressIndicator();
 
         final query = _busquedaSocioPOS.toLowerCase().trim();
-
         final docs = snapshot.data!.docs.where((d) {
           final data = d.data() as Map<String, dynamic>? ?? {};
           final String n = (data['nombre'] ?? '').toString().toLowerCase();
@@ -807,7 +796,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
     );
   }
 
-  // 🔑 DIÁLOGO DE APERTURA MANUAL / AUTOMÁTICA DE CAJA POR SECTOR
   void _mostrarDialogoAperturaCajaDirecta({bool esCobroAutomatico = false}) {
     final TextEditingController montoInicialCtrl = TextEditingController(
       text: '0',
@@ -830,7 +818,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
             const SizedBox(width: 10),
             Text(
               esCobroAutomatico
-                  ? 'Apertura: $_sectorCajaSeleccionado'
+                  ? 'Apertura: ${_sectorCajaSeleccionado ?? "Caja"}'
                   : 'Apertura de Caja',
             ),
           ],
@@ -840,7 +828,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Ingresá el saldo inicial en efectivo para habilitar la caja en $_sectorCajaSeleccionado (Operador: $nombreOperador):',
+              'Ingresá el saldo inicial en efectivo para habilitar ${_sectorCajaSeleccionado ?? "la caja"} (Operador: $nombreOperador):',
             ),
             const SizedBox(height: 16),
             TextField(
@@ -868,11 +856,13 @@ class _PosCajaPageState extends State<PosCajaPage> {
                   double.tryParse(montoInicialCtrl.text) ?? 0.0;
 
               await _firestore.collection('control_cajas').add({
-                'sector': _sectorCajaSeleccionado,
+                'nombreCajaTerminal':
+                    _sectorCajaSeleccionado ?? 'Caja Buffet & POS Central',
                 'usuario': nombreOperador,
                 'usuarioUid': userActual?.uid ?? 'anonimo',
                 'fechaApertura': DateTime.now(),
                 'montoInicialARS': montoInicial,
+                'saldoInicialARS': montoInicial,
                 'estado': 'Abierta',
                 'totalEfectivoARS': montoInicial,
                 'totalEfectivoUSD': 0.0,
@@ -888,16 +878,13 @@ class _PosCajaPageState extends State<PosCajaPage> {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text(
-                      '🟢 CAJA ABIERTA: $_sectorCajaSeleccionado iniciada con \$${montoInicial.toStringAsFixed(0)} ARS por $nombreOperador.',
+                      '🟢 CAJA ABIERTA: ${_sectorCajaSeleccionado ?? "Caja"} iniciada con \$${montoInicial.toStringAsFixed(0)} ARS por $nombreOperador.',
                     ),
                     backgroundColor: Colors.green.shade800,
-                    duration: const Duration(seconds: 4),
                   ),
                 );
 
-                if (esCobroAutomatico) {
-                  _mostrarDialogoCobro();
-                }
+                if (esCobroAutomatico) _mostrarDialogoCobro();
               }
             },
             child: const Text(
@@ -910,17 +897,16 @@ class _PosCajaPageState extends State<PosCajaPage> {
     );
   }
 
-  // 🛡️ VERIFICAR Y PROCESAR COBRO SEGÚN SECTOR SELECCIONADO
   Future<void> _verificarYProcesarCobro() async {
     if (_carrito.isEmpty) return;
+    if (_sectorCajaSeleccionado == null) return;
 
     final userActual = FirebaseAuth.instance.currentUser;
     final String uidActual = userActual?.uid ?? 'anonimo';
 
-    // Consulta la caja abierta en el sector que el usuario eligió
     final cajaQuery = await _firestore
         .collection('control_cajas')
-        .where('sector', isEqualTo: _sectorCajaSeleccionado)
+        .where('nombreCajaTerminal', isEqualTo: _sectorCajaSeleccionado)
         .where('estado', isEqualTo: 'Abierta')
         .limit(1)
         .get();
@@ -935,7 +921,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
     final String uidOperadorCaja = dataCaja['usuarioUid'] ?? '';
     final String nombreOperadorCaja = dataCaja['usuario'] ?? 'Otro operador';
 
-    // SI LA CAJA DEL SECTOR SELECCIONADO ESTÁ TOMADA POR OTRO OPERADOR
     if (uidOperadorCaja != uidActual) {
       if (mounted) {
         showDialog(
@@ -987,7 +972,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
     _mostrarDialogoCobro();
   }
 
-  // 🚪 COBRO Y IMPACTO EN FIRESTORE
   Future<void> _mostrarDialogoCobro() async {
     String medioPagoSeleccionado = 'Efectivo ARS';
 
@@ -1045,6 +1029,27 @@ class _PosCajaPageState extends State<PosCajaPage> {
                   });
                 },
               ),
+              const SizedBox(height: 16),
+              // 🧾 REINCORPORACIÓN DE COMPROBANTE FISCAL VS TICKET X
+              SwitchListTile(
+                title: Text(
+                  _emitirFacturaFiscal
+                      ? 'Emitir Factura Fiscal ARCA (Oficial)'
+                      : 'Comprobante X (No Fiscal)',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                  ),
+                ),
+                subtitle: Text(
+                  _emitirFacturaFiscal
+                      ? 'Solicita CAE a ARCA'
+                      : 'No genera impacto impositivo',
+                ),
+                value: _emitirFacturaFiscal,
+                activeColor: Colors.indigo,
+                onChanged: (v) => setModalState(() => _emitirFacturaFiscal = v),
+              ),
             ],
           ),
           actions: [
@@ -1074,7 +1079,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
   Future<void> _procesarVentaFirestore(String medio) async {
     final cajaQuery = await _firestore
         .collection('control_cajas')
-        .where('sector', isEqualTo: _sectorCajaSeleccionado)
+        .where('nombreCajaTerminal', isEqualTo: _sectorCajaSeleccionado)
         .where('estado', isEqualTo: 'Abierta')
         .limit(1)
         .get();
@@ -1103,13 +1108,11 @@ class _PosCajaPageState extends State<PosCajaPage> {
             .doc(_socioSeleccionadoId!)
             .collection('matriculas_pagas')
             .doc(item['anioMatricula']);
-
         batch.set(matRef, {
           'fecha': DateTime.now(),
           'monto': item['precio'],
           'medioPago': medio,
         });
-
         DocumentReference socioRef = _firestore
             .collection('socios')
             .doc(_socioSeleccionadoId!);
@@ -1125,13 +1128,11 @@ class _PosCajaPageState extends State<PosCajaPage> {
             .doc(_socioSeleccionadoId!)
             .collection('cuotas_pagas')
             .doc(item['mesPeriodo']);
-
         batch.set(cuotaPagaRef, {
           'fechaPago': DateTime.now(),
           'monto': item['precio'],
           'periodo': item['mesPeriodo'],
         });
-
         DocumentReference socioRef = _firestore
             .collection('socios')
             .doc(_socioSeleccionadoId!);
@@ -1149,15 +1150,35 @@ class _PosCajaPageState extends State<PosCajaPage> {
       }
     }
 
+    String? caeFactura;
+    if (_emitirFacturaFiscal) {
+      try {
+        final callable = cloud_functions.FirebaseFunctions.instance
+            .httpsCallable('emitirFacturaArca');
+        final resp = await callable.call({
+          'total': totalCarrito,
+          'socioDni': _socioSeleccionadoPOS?['dni'] ?? '',
+        });
+        if (resp.data['success'] == true) {
+          caeFactura = resp.data['cae'];
+        }
+      } catch (e) {
+        print("Error al solicitar CAE: $e");
+      }
+    }
+
     DocumentReference ventaRef = _firestore.collection('ventas_buffet').doc();
     batch.set(ventaRef, {
       'items': _carrito,
       'total': totalCarrito,
       'medio_pago': medio,
-      'sector': _sectorCajaSeleccionado,
+      'nombreCajaTerminal': _sectorCajaSeleccionado,
+      'cajaId': docCajaId,
       'fecha': DateTime.now(),
       'socio_id': _socioSeleccionadoId,
       'origen_salón': _mesaSeleccionadaNombre ?? 'Mostrador Directo',
+      'fiscalizado': _emitirFacturaFiscal && caeFactura != null,
+      'cae': caeFactura ?? (_emitirFacturaFiscal ? 'ERROR_CAE' : 'NO_FISCAL_X'),
     });
 
     if (medio == 'Cuenta Corriente' && _socioSeleccionadoId != null) {
@@ -1166,7 +1187,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
           .doc(_socioSeleccionadoId!)
           .collection('cuenta_corriente')
           .doc();
-
       batch.set(ctaCteRef, {
         'fecha': DateTime.now(),
         'tipo': 'Consumo POS',
@@ -1174,7 +1194,6 @@ class _PosCajaPageState extends State<PosCajaPage> {
         'detalle':
             'Consumo asignado a Cuenta Corriente ($_sectorCajaSeleccionado)',
       });
-
       DocumentReference socioRef = _firestore
           .collection('socios')
           .doc(_socioSeleccionadoId!);
@@ -1215,6 +1234,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
         items: itemsCobrados,
         total: totalVentaActual,
         medioPago: medio,
+        cae: caeFactura,
       );
     }
 
@@ -1229,9 +1249,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text(
-            '✅ Cobro registrado y comprobante enviado por WhatsApp',
-          ),
+          content: Text('✅ Cobro registrado y comprobante emitido'),
           backgroundColor: Colors.green,
         ),
       );
@@ -1350,106 +1368,142 @@ class _PosCajaPageState extends State<PosCajaPage> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      // 🏢 SELECTOR DE SECTOR / PUNTO DE VENTA DE CAJA
-                      DropdownButton<String>(
-                        value: _sectorCajaSeleccionado,
-                        icon: const Icon(
-                          Icons.arrow_drop_down_circle_outlined,
-                          color: Color(0xFF0F172A),
-                        ),
-                        style: const TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF0F172A),
-                        ),
-                        underline: Container(),
-                        onChanged: (String? nuevoSector) {
-                          if (nuevoSector != null) {
-                            setState(
-                              () => _sectorCajaSeleccionado = nuevoSector,
-                            );
+                      // 🏢 MAESTRO DE CAJAS DINÁMICO DESDE FIRESTORE
+                      StreamBuilder<QuerySnapshot>(
+                        stream: _firestore
+                            .collection('terminales_caja')
+                            .snapshots(),
+                        builder: (context, snapshot) {
+                          List<String> opcionesCajas = [
+                            'Caja Buffet & POS Central',
+                          ];
+                          if (snapshot.hasData &&
+                              snapshot.data!.docs.isNotEmpty) {
+                            opcionesCajas = snapshot.data!.docs
+                                .map(
+                                  (doc) =>
+                                      (doc.data()
+                                              as Map<String, dynamic>)['nombre']
+                                          as String? ??
+                                      '',
+                                )
+                                .where((n) => n.isNotEmpty)
+                                .toList();
                           }
-                        },
-                        items: _sectoresDisponibles.map((String sector) {
-                          return DropdownMenuItem<String>(
-                            value: sector,
-                            child: Text(sector),
+
+                          if (_sectorCajaSeleccionado == null ||
+                              (!opcionesCajas.contains(
+                                    _sectorCajaSeleccionado,
+                                  ) &&
+                                  opcionesCajas.isNotEmpty)) {
+                            _sectorCajaSeleccionado = opcionesCajas.first;
+                          }
+
+                          return DropdownButton<String>(
+                            value: _sectorCajaSeleccionado,
+                            icon: const Icon(
+                              Icons.arrow_drop_down_circle_outlined,
+                              color: Color(0xFF0F172A),
+                            ),
+                            style: const TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF0F172A),
+                            ),
+                            underline: Container(),
+                            onChanged: (String? nuevoSector) {
+                              if (nuevoSector != null)
+                                setState(
+                                  () => _sectorCajaSeleccionado = nuevoSector,
+                                );
+                            },
+                            items: opcionesCajas.map((String sector) {
+                              return DropdownMenuItem<String>(
+                                value: sector,
+                                child: Text(sector),
+                              );
+                            }).toList(),
                           );
-                        }).toList(),
+                        },
                       ),
 
                       // 🛡️ CHIP DE ESTADO DINÁMICO DE LA CAJA SELECCIONADA
-                      StreamBuilder<QuerySnapshot>(
-                        stream: _firestore
-                            .collection('control_cajas')
-                            .where('sector', isEqualTo: _sectorCajaSeleccionado)
-                            .where('estado', isEqualTo: 'Abierta')
-                            .snapshots(),
-                        builder: (context, snapshot) {
-                          final userActual = FirebaseAuth.instance.currentUser;
-                          final bool hayCajaAbierta =
-                              snapshot.hasData &&
-                              snapshot.data!.docs.isNotEmpty;
+                      if (_sectorCajaSeleccionado != null)
+                        StreamBuilder<QuerySnapshot>(
+                          stream: _firestore
+                              .collection('control_cajas')
+                              .where(
+                                'nombreCajaTerminal',
+                                isEqualTo: _sectorCajaSeleccionado,
+                              )
+                              .where('estado', isEqualTo: 'Abierta')
+                              .snapshots(),
+                          builder: (context, snapshot) {
+                            final userActual =
+                                FirebaseAuth.instance.currentUser;
+                            final bool hayCajaAbierta =
+                                snapshot.hasData &&
+                                snapshot.data!.docs.isNotEmpty;
 
-                          String textoEstado = 'Caja Cerrada';
-                          Color colorEstado = Colors.orange;
-                          bool esMiCaja = false;
+                            String textoEstado = 'Caja Cerrada';
+                            Color colorEstado = Colors.orange;
+                            bool esMiCaja = false;
 
-                          if (hayCajaAbierta) {
-                            final data =
-                                snapshot.data!.docs.first.data()
-                                    as Map<String, dynamic>;
-                            final uidCaja = data['usuarioUid'];
-                            final operadorNombre =
-                                data['usuario'] ?? 'Operador';
+                            if (hayCajaAbierta) {
+                              final data =
+                                  snapshot.data!.docs.first.data()
+                                      as Map<String, dynamic>;
+                              final uidCaja = data['usuarioUid'];
+                              final operadorNombre =
+                                  data['usuario'] ?? 'Operador';
 
-                            if (uidCaja == userActual?.uid) {
-                              textoEstado = 'Abierta (Tu Turno)';
-                              colorEstado = Colors.green;
-                              esMiCaja = true;
-                            } else {
-                              textoEstado = 'Bloqueada: $operadorNombre';
-                              colorEstado = Colors.red;
-                            }
-                          }
-
-                          return ActionChip(
-                            avatar: Icon(
-                              hayCajaAbierta
-                                  ? (esMiCaja
-                                        ? Icons.check_circle_rounded
-                                        : Icons.lock_rounded)
-                                  : Icons.lock_clock_rounded,
-                              color: colorEstado,
-                              size: 20,
-                            ),
-                            label: Text(
-                              textoEstado,
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: colorEstado,
-                              ),
-                            ),
-                            backgroundColor: colorEstado.withOpacity(0.1),
-                            side: BorderSide(
-                              color: colorEstado.withOpacity(0.3),
-                            ),
-                            onPressed: () {
-                              if (!hayCajaAbierta) {
-                                _mostrarDialogoAperturaCajaDirecta(
-                                  esCobroAutomatico: false,
-                                );
-                              } else if (esMiCaja) {
-                                _mostrarDialogoCierreCaja(
-                                  snapshot.data!.docs.first,
-                                );
+                              if (uidCaja == userActual?.uid) {
+                                textoEstado = 'Abierta (Tu Turno)';
+                                colorEstado = Colors.green;
+                                esMiCaja = true;
                               } else {
-                                _verificarYProcesarCobro(); // Levanta el cuadro emergente informando el bloqueo
+                                textoEstado = 'Bloqueada: $operadorNombre';
+                                colorEstado = Colors.red;
                               }
-                            },
-                          );
-                        },
-                      ),
+                            }
+
+                            return ActionChip(
+                              avatar: Icon(
+                                hayCajaAbierta
+                                    ? (esMiCaja
+                                          ? Icons.check_circle_rounded
+                                          : Icons.lock_rounded)
+                                    : Icons.lock_clock_rounded,
+                                color: colorEstado,
+                                size: 20,
+                              ),
+                              label: Text(
+                                textoEstado,
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  color: colorEstado,
+                                ),
+                              ),
+                              backgroundColor: colorEstado.withOpacity(0.1),
+                              side: BorderSide(
+                                color: colorEstado.withOpacity(0.3),
+                              ),
+                              onPressed: () {
+                                if (!hayCajaAbierta) {
+                                  _mostrarDialogoAperturaCajaDirecta(
+                                    esCobroAutomatico: false,
+                                  );
+                                } else if (esMiCaja) {
+                                  _mostrarDialogoCierreCaja(
+                                    snapshot.data!.docs.first,
+                                  );
+                                } else {
+                                  _verificarYProcesarCobro();
+                                }
+                              },
+                            );
+                          },
+                        ),
                     ],
                   ),
                   const SizedBox(height: 16),
@@ -1540,9 +1594,8 @@ class _PosCajaPageState extends State<PosCajaPage> {
                           .collection('inventario_general')
                           .snapshots(),
                       builder: (context, snapshot) {
-                        if (!snapshot.hasData) {
+                        if (!snapshot.hasData)
                           return const CircularProgressIndicator();
-                        }
                         final docs = snapshot.data!.docs;
 
                         return GridView.builder(

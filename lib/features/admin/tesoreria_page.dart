@@ -22,7 +22,6 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
     super.dispose();
   }
 
-  // 📊 RESUMEN FISCAL & CAJA EN VIVO
   Widget _buildResumenFiscalDiario() {
     final DateTime hoy = DateTime.now();
     final DateTime inicioHoy = DateTime(hoy.year, hoy.month, hoy.day);
@@ -147,7 +146,6 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
     );
   }
 
-  // 🏪 DETALLE EN VIVO DE MEDIOS DE PAGO DE LA CAJA SELECCIONADA
   Widget _buildDetalleCajaSeleccionada(List<DocumentSnapshot> abiertasDocs) {
     DocumentSnapshot? docActual;
     for (var doc in abiertasDocs) {
@@ -160,9 +158,10 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
 
     final data = docActual.data() as Map<String, dynamic>;
     final double tArs =
-        (data['saldoInicialARS'] ?? 0.0) + (data['totalEfectivoARS'] ?? 0.0);
-    final double tUsd =
-        (data['saldoInicialUSD'] ?? 0.0) + (data['totalEfectivoUSD'] ?? 0.0);
+        (data['montoInicialARS'] as num?)?.toDouble() ??
+        (data['totalEfectivoARS'] as num?)?.toDouble() ??
+        0.0;
+    final double tUsd = (data['totalEfectivoUSD'] as num?)?.toDouble() ?? 0.0;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -187,32 +186,32 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
             ),
             _cardMonto(
               'Recaudado Mercado Pago',
-              '\$${(data['totalMercadoPago'] ?? 0.0).toStringAsFixed(2)} ARS',
+              '\$${((data['totalMercadoPago'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(2)} ARS',
               Colors.blue,
             ),
             _cardMonto(
               'Recaudado MODO',
-              '\$${(data['totalModo'] ?? 0.0).toStringAsFixed(2)} ARS',
+              '\$${((data['totalModo'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(2)} ARS',
               Colors.purple,
             ),
             _cardMonto(
               'Débito Posnet',
-              '\$${(data['totalTarjetaDebito'] ?? 0.0).toStringAsFixed(2)} ARS',
+              '\$${((data['totalTarjetaDebito'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(2)} ARS',
               Colors.indigo,
             ),
             _cardMonto(
               'Crédito Posnet',
-              '\$${(data['totalTarjetaCredito'] ?? 0.0).toStringAsFixed(2)} ARS',
+              '\$${((data['totalTarjetaCredito'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(2)} ARS',
               Colors.orange,
             ),
             _cardMonto(
               'Transferencias CBU',
-              '\$${(data['totalTransferencia'] ?? 0.0).toStringAsFixed(2)} ARS',
+              '\$${((data['totalTransferencia'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(2)} ARS',
               Colors.cyan,
             ),
             _cardMonto(
               'Fiar / Cuenta Corriente',
-              '\$${(data['totalCtaCte'] ?? 0.0).toStringAsFixed(2)} ARS',
+              '\$${((data['totalCtaCte'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(2)} ARS',
               Colors.red,
             ),
           ],
@@ -261,7 +260,7 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
                   color: esEgreso ? Colors.red : Colors.green,
                 ),
                 title: Text(
-                  '${m['tipo']} - \$${m['monto'].toStringAsFixed(2)} ARS',
+                  '${m['tipo']} - \$${(m['monto'] as num).toStringAsFixed(2)} ARS',
                   style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
                 subtitle: Text(
@@ -280,7 +279,6 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
     );
   }
 
-  // 📜 EXPLORADOR HISTÓRICO DE CIERRES Y ARQUEOS CONSOLIDADOS
   Widget _buildHistorialGlobalCerradas(List<DocumentSnapshot> allDocs) {
     final List<DocumentSnapshot> cerradas = [];
     for (var d in allDocs) {
@@ -328,7 +326,7 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
                     color: Colors.blueGrey,
                   ),
                   title: Text(
-                    'Caja: [${data['nombreCajaTerminal']}] • Turno: ${data['usuario']}',
+                    'Caja: [${data['nombreCajaTerminal'] ?? "General"}] • Turno: ${data['usuario']}',
                     style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
                   subtitle: Text(
@@ -339,7 +337,7 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
                       Text(
-                        '\$${(data['cierreRealEfectivoARS'] ?? 0.0).toStringAsFixed(0)} ARS',
+                        '\$${((data['totalFinalGeneral'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(0)} ARS',
                         style: const TextStyle(
                           fontWeight: FontWeight.bold,
                           color: Colors.teal,
@@ -347,7 +345,7 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
                         ),
                       ),
                       const Text(
-                        'Contado Real',
+                        'Total Consolidado',
                         style: TextStyle(fontSize: 10, color: Colors.grey),
                       ),
                     ],
@@ -360,7 +358,6 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
     );
   }
 
-  // 🛠️ MAESTRO DE CAJAS / ABM DE TERMINALES
   Widget _buildSeccionABMTerminales() {
     return Container(
       padding: const EdgeInsets.all(24),
@@ -387,7 +384,7 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
                 child: TextField(
                   controller: _nombreNuevaTerminalCtrl,
                   decoration: const InputDecoration(
-                    labelText: 'Nombre de la Caja (Ej: Recepción Paddle)',
+                    labelText: 'Nombre de la Caja (Ej: Caja Recepción Pádel)',
                     border: OutlineInputBorder(),
                   ),
                 ),
@@ -428,12 +425,11 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
               if (!snapshot.hasData) return const LinearProgressIndicator();
               final docs = snapshot.data!.docs;
 
-              if (docs.isEmpty) {
+              if (docs.isEmpty)
                 return const Text(
                   'No hay terminales registradas.',
                   style: TextStyle(color: Colors.grey),
                 );
-              }
 
               return ListView.builder(
                 shrinkWrap: true,
@@ -518,11 +514,10 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
       body: StreamBuilder<QuerySnapshot>(
         stream: _firestore.collection('control_cajas').snapshots(),
         builder: (context, snapshot) {
-          if (!snapshot.hasData) {
+          if (!snapshot.hasData)
             return const Center(
               child: CircularProgressIndicator(color: Colors.indigo),
             );
-          }
 
           final allDocs = snapshot.data!.docs;
           final List<DocumentSnapshot> abiertasDocs = [];
@@ -599,7 +594,7 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
                       return DropdownMenuItem(
                         value: d.id,
                         child: Text(
-                          '${data['nombreCajaTerminal']} - Responsable: ${data['usuario']}',
+                          '${data['nombreCajaTerminal'] ?? "General"} - Responsable: ${data['usuario'] ?? "Cajero"}',
                         ),
                       );
                     }).toList(),
