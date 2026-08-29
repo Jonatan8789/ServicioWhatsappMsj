@@ -177,6 +177,13 @@ class _SociosPageState extends State<SociosPage> {
                                     width: 48,
                                     height: 48,
                                     fit: BoxFit.cover,
+                                    loadingBuilder: (context, child, progress) {
+                                      if (progress == null) return child;
+                                      return const CircularProgressIndicator(
+                                        color: Colors.teal,
+                                        strokeWidth: 2,
+                                      );
+                                    },
                                     errorBuilder:
                                         (context, error, stackTrace) =>
                                             const Icon(

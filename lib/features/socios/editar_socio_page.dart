@@ -394,6 +394,18 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
                                                     width: 130,
                                                     height: 130,
                                                     fit: BoxFit.cover,
+                                                    loadingBuilder:
+                                                        (
+                                                          context,
+                                                          child,
+                                                          progress,
+                                                        ) {
+                                                          if (progress == null)
+                                                            return child;
+                                                          return const CircularProgressIndicator(
+                                                            color: Colors.teal,
+                                                          );
+                                                        },
                                                     errorBuilder:
                                                         (
                                                           _,
