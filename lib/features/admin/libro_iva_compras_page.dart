@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
+import '../../shared/csv_utils.dart';
+import '../../shared/csv_download.dart';
 
 class LibroIvaComprasPage extends StatefulWidget {
   const LibroIvaComprasPage({super.key});
@@ -29,6 +31,8 @@ class _LibroIvaComprasPageState extends State<LibroIvaComprasPage> {
     symbol: '\$',
   );
 
+  List<QueryDocumentSnapshot<Object?>>? _ultimaListaCargada;
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -50,7 +54,9 @@ class _LibroIvaComprasPageState extends State<LibroIvaComprasPage> {
                 borderRadius: BorderRadius.circular(8),
               ),
             ),
-            onPressed: () => _exportarCSV(context),
+            onPressed: _ultimaListaCargada == null
+                ? null
+                : () => _exportarCSV(context, _ultimaListaCargada!),
             icon: const Icon(Icons.download_rounded, size: 20),
             label: const Text(
               'Exportar a CSV / Excel',
@@ -95,6 +101,19 @@ class _LibroIvaComprasPageState extends State<LibroIvaComprasPage> {
                   }
 
                   final docs = snapshot.data!.docs;
+
+                  // 🚨 Igual que en libro_iva_ventas_page.dart: no se puede
+                  // llamar setState del State padre de forma síncrona acá
+                  // (corre dentro del build() del StreamBuilder) — se
+                  // difiere al post-frame para que el botón "Exportar CSV"
+                  // del AppBar reaccione cuando llegan datos reales.
+                  if (_ultimaListaCargada?.length != docs.length) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted) setState(() => _ultimaListaCargada = docs);
+                    });
+                  } else {
+                    _ultimaListaCargada = docs;
+                  }
 
                   // 🧮 ACUMULADORES CONTABLES
                   double acumuladoNeto21 = 0.0;
@@ -531,15 +550,63 @@ class _LibroIvaComprasPageState extends State<LibroIvaComprasPage> {
     );
   }
 
-  // 📥 SIMULACIÓN DE EXPORTACIÓN CSV
-  void _exportarCSV(BuildContext context) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'Generando archivo Libro_IVA_Compras.csv para descarga...',
-        ),
-        backgroundColor: Colors.teal,
-      ),
+  // 📥 EXPORTACIÓN CSV REAL — antes esto era un stub que sólo mostraba un
+  // SnackBar y no generaba ningún archivo.
+  void _exportarCSV(
+    BuildContext context,
+    List<QueryDocumentSnapshot<Object?>> docs,
+  ) {
+    final filas = docs.map((doc) {
+      final data = doc.data() as Map<String, dynamic>;
+      final DateTime fecha = (data['fechaEmision'] as Timestamp).toDate();
+      return [
+        DateFormat('dd/MM/yyyy').format(fecha),
+        '${data['tipoComprobante'] ?? ''} ${data['numeroComprobante'] ?? ''}',
+        data['razonSocialProveedor'] ?? '',
+        data['cuitProveedor'] ?? '',
+        ((data['netoGravado21'] as num?) ?? 0).toStringAsFixed(2),
+        ((data['netoGravado105'] as num?) ?? 0).toStringAsFixed(2),
+        ((data['netoGravado27'] as num?) ?? 0).toStringAsFixed(2),
+        ((data['ivaTotal'] as num?) ?? 0).toStringAsFixed(2),
+        ((data['exento'] as num?) ?? 0).toStringAsFixed(2),
+        (((data['percepcionIIBBTotal'] as num?) ??
+                    (data['percepcionIIBB'] as num?)) ??
+                0)
+            .toStringAsFixed(2),
+        (((data['percepcionIVA'] as num?) ?? 0) +
+                ((data['percepcionGanancias'] as num?) ?? 0))
+            .toStringAsFixed(2),
+        ((data['montoTotal'] as num?) ?? 0).toStringAsFixed(2),
+      ];
+    }).toList();
+
+    final csv = generarCsv(
+      [
+        'Fecha',
+        'Comprobante',
+        'Razón Social',
+        'CUIT',
+        'Neto 21%',
+        'Neto 10.5%',
+        'Neto 27%',
+        'Total IVA',
+        'Exento',
+        'Perc. IIBB',
+        'Perc. IVA/Ganancias',
+        'Total Comprobante',
+      ],
+      filas,
     );
+
+    try {
+      descargarCsv(
+        'libro_iva_compras_${DateFormat('yyyy-MM-dd').format(DateTime.now())}.csv',
+        csv,
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('No se pudo exportar: $e')));
+    }
   }
 }

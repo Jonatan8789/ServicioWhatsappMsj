@@ -6,6 +6,9 @@ import 'package:cloud_functions/cloud_functions.dart' as cloud_functions;
 import 'package:http/http.dart' as http;
 import 'producto_buffet_model.dart';
 import '../tarifas/tarifa_model.dart';
+import '../../theme/app_theme.dart';
+import '../inventario/movimiento_stock_service.dart';
+import '../../services/sugerencia_fiscal_service.dart';
 
 class FirebaseFunctions {
   static _FirebaseFunctionsWrapper get instance => _FirebaseFunctionsWrapper();
@@ -67,7 +70,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
     buffer.writeln('----------------------------------------');
     buffer.writeln('👤 *Cliente:* $nombreCliente');
     buffer.writeln(
-      '📍 *Punto de Venta:* ${_sectorCajaSeleccionado ?? "General"}',
+      '📍 *Punto de Venta (Caja):* ${_sectorCajaSeleccionado ?? "General"}',
     );
     buffer.writeln('💳 *Medio de Pago:* $medioPago');
     buffer.writeln(
@@ -118,8 +121,11 @@ class _PosCajaPageState extends State<PosCajaPage> {
         (dataCaja['totalTransferencia'] as num?)?.toDouble() ?? 0.0;
     final double ctaCte = (dataCaja['totalCtaCte'] as num?)?.toDouble() ?? 0.0;
 
+    // 🚨 efecARS ya incluye el monto inicial de apertura (se usa también para
+    // conciliar el efectivo físico del cajón), así que se resta acá para que
+    // "Total Recaudado" refleje ingresos reales del turno y no el float.
     final double totalGeneralRecaudado =
-        efecARS + mp + debito + credito + trans;
+        (efecARS - inicial) + mp + debito + credito + trans;
     final TextEditingController obsCtrl = TextEditingController();
     final String operadorActual =
         dataCaja['usuario'] ?? 'Administrador Central';
@@ -131,7 +137,9 @@ class _PosCajaPageState extends State<PosCajaPage> {
           children: [
             const Icon(Icons.lock_rounded, color: Colors.red, size: 28),
             const SizedBox(width: 10),
-            Text('Cierre: ${_sectorCajaSeleccionado ?? "Caja"}'),
+            Text(
+              'Cierre: Punto de Venta (Caja) ${_sectorCajaSeleccionado ?? "General"}',
+            ),
           ],
         ),
         content: SizedBox(
@@ -248,7 +256,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text(
-                      '🔒 CAJA CERRADA: Resumen emitido para ${_sectorCajaSeleccionado ?? "Caja"}.',
+                      '🔒 CAJA CERRADA: Resumen emitido para ${_sectorCajaSeleccionado ?? "General"}.',
                     ),
                     backgroundColor: Colors.red,
                   ),
@@ -308,9 +316,13 @@ class _PosCajaPageState extends State<PosCajaPage> {
     if (limpio.isEmpty) return;
 
     final buffer = StringBuffer();
-    buffer.writeln('📊 *REPORTE CONSOLIDADO - CIERRE DE CAJA*');
+    buffer.writeln(
+      '📊 *REPORTE CONSOLIDADO - CIERRE DE PUNTO DE VENTA (CAJA)*',
+    );
     buffer.writeln('----------------------------------------');
-    buffer.writeln('📍 *Sector:* ${_sectorCajaSeleccionado ?? "General"}');
+    buffer.writeln(
+      '📍 *Punto de Venta:* ${_sectorCajaSeleccionado ?? "General"}',
+    );
     buffer.writeln('👤 *Operador:* $operador');
     buffer.writeln(
       '📅 *Fecha:* ${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year} ${DateTime.now().hour}:${DateTime.now().minute} hs',
@@ -397,12 +409,13 @@ class _PosCajaPageState extends State<PosCajaPage> {
           .where('socio_id', isEqualTo: socioId)
           .where('estado', isEqualTo: 'Pendiente')
           .get();
+      if (!mounted) return;
       setState(() {
         _reservasPendientesDelSocio = snapshot.docs;
         _buscandoReservas = false;
       });
     } catch (e) {
-      setState(() => _buscandoReservas = false);
+      if (mounted) setState(() => _buscandoReservas = false);
     }
   }
 
@@ -818,8 +831,8 @@ class _PosCajaPageState extends State<PosCajaPage> {
             const SizedBox(width: 10),
             Text(
               esCobroAutomatico
-                  ? 'Apertura: ${_sectorCajaSeleccionado ?? "Caja"}'
-                  : 'Apertura de Caja',
+                  ? 'Apertura: Punto de Venta (Caja) ${_sectorCajaSeleccionado ?? "General"}'
+                  : 'Apertura de Punto de Venta (Caja)',
             ),
           ],
         ),
@@ -828,7 +841,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Ingresá el saldo inicial en efectivo para habilitar ${_sectorCajaSeleccionado ?? "la caja"} (Operador: $nombreOperador):',
+              'Ingresá el saldo inicial en efectivo para habilitar ${_sectorCajaSeleccionado ?? "el Punto de Venta (Caja)"} (Operador: $nombreOperador):',
             ),
             const SizedBox(height: 16),
             TextField(
@@ -857,7 +870,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
 
               await _firestore.collection('control_cajas').add({
                 'nombreCajaTerminal':
-                    _sectorCajaSeleccionado ?? 'Caja Buffet & POS Central',
+                    _sectorCajaSeleccionado ?? 'Punto de Venta (Caja) Central',
                 'usuario': nombreOperador,
                 'usuarioUid': userActual?.uid ?? 'anonimo',
                 'fechaApertura': DateTime.now(),
@@ -878,7 +891,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
                     content: Text(
-                      '🟢 CAJA ABIERTA: ${_sectorCajaSeleccionado ?? "Caja"} iniciada con \$${montoInicial.toStringAsFixed(0)} ARS por $nombreOperador.',
+                      '🟢 PUNTO DE VENTA ABIERTO: ${_sectorCajaSeleccionado ?? "Caja"} iniciado con \$${montoInicial.toStringAsFixed(0)} ARS por $nombreOperador.',
                     ),
                     backgroundColor: Colors.green.shade800,
                   ),
@@ -916,6 +929,8 @@ class _PosCajaPageState extends State<PosCajaPage> {
       return;
     }
 
+    if (!mounted) return;
+
     final docCaja = cajaQuery.docs.first;
     final dataCaja = docCaja.data();
     final String uidOperadorCaja = dataCaja['usuarioUid'] ?? '';
@@ -930,7 +945,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
               children: [
                 Icon(Icons.gpp_bad_rounded, color: Colors.red, size: 28),
                 SizedBox(width: 10),
-                Text('Sector Bloqueado'),
+                Text('Punto de Venta Bloqueado'),
               ],
             ),
             content: Column(
@@ -938,7 +953,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '$_sectorCajaSeleccionado está siendo operada por:\n👤 $nombreOperadorCaja',
+                  'El Punto de Venta (Caja) $_sectorCajaSeleccionado está siendo operada por:\n👤 $nombreOperadorCaja',
                   style: const TextStyle(
                     fontWeight: FontWeight.bold,
                     fontSize: 15,
@@ -946,7 +961,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
                 ),
                 const SizedBox(height: 12),
                 const Text(
-                  'Podés seleccionar otro sector disponible en el menú desplegable superior o solicitar el cierre de turno.',
+                  'Podés seleccionar otro Punto de Venta (Caja) disponible en el menú desplegable superior o solicitar el cierre de turno.',
                   style: TextStyle(color: Colors.black87, fontSize: 13),
                 ),
               ],
@@ -958,7 +973,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
                 ),
                 onPressed: () => Navigator.pop(ctx),
                 child: const Text(
-                  'Cambiar de Sector',
+                  'Cambiar Punto de Venta',
                   style: TextStyle(color: Colors.white),
                 ),
               ),
@@ -981,7 +996,9 @@ class _PosCajaPageState extends State<PosCajaPage> {
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setModalState) => AlertDialog(
-          title: Text('Procesar Cobro: $_sectorCajaSeleccionado'),
+          title: Text(
+            'Procesar Cobro: Punto de Venta (Caja) $_sectorCajaSeleccionado',
+          ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -1026,6 +1043,12 @@ class _PosCajaPageState extends State<PosCajaPage> {
                         }
                       }
                     }
+                    // 🧾 Sugiere factura fiscal para medios electrónicos y
+                    // comprobante X para efectivo/cta.cte — el operador
+                    // puede seguir tildando/destildando el switch a mano.
+                    _emitirFacturaFiscal = esMedioPagoElectronico(
+                      medioPagoSeleccionado,
+                    );
                   });
                 },
               ),
@@ -1075,6 +1098,62 @@ class _PosCajaPageState extends State<PosCajaPage> {
     );
   }
 
+  // ⚠️ Aviso (no bloqueante) de stock insuficiente antes de cobrar: el
+  // cajero decide si continúa o cancela la venta.
+  Future<bool> _confirmarVentaConStockInsuficiente(List<String> avisos) async {
+    if (!mounted) return false;
+    final bool? continuar = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.orange),
+            SizedBox(width: 10),
+            Text('Stock insuficiente'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Los siguientes productos no tienen stock suficiente:',
+            ),
+            const SizedBox(height: 12),
+            ...avisos.map(
+              (a) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2.0),
+                child: Text('• $a', style: const TextStyle(fontSize: 13)),
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              '¿Continuar de todas formas? El stock quedará en negativo.',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar Venta'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.orange.shade800,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text(
+              'Continuar Igual',
+              style: TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
+    return continuar ?? false;
+  }
+
   // 🔄 PROCESAMIENTO CON DESCUENTO DE STOCK DINÁMICO POR RECETA / COMBOS
   Future<void> _procesarVentaFirestore(String medio) async {
     final cajaQuery = await _firestore
@@ -1084,10 +1163,14 @@ class _PosCajaPageState extends State<PosCajaPage> {
         .limit(1)
         .get();
 
+    if (!mounted) return;
+
     if (cajaQuery.docs.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('⚠️ Abrí $_sectorCajaSeleccionado antes de cobros.'),
+          content: Text(
+            '⚠️ Abrí el Punto de Venta (Caja) $_sectorCajaSeleccionado antes de cobros.',
+          ),
           backgroundColor: Colors.red,
         ),
       );
@@ -1095,11 +1178,117 @@ class _PosCajaPageState extends State<PosCajaPage> {
     }
 
     final docCajaId = cajaQuery.docs.first.id;
-    WriteBatch batch = _firestore.batch();
 
     final List<Map<String, dynamic>> itemsCobrados = List.from(_carrito);
     final double totalVentaActual = totalCarrito;
     final Map<String, dynamic>? datosSocioActual = _socioSeleccionadoPOS;
+
+    // 🚀 Trae en un puñado de consultas (en vez de una por línea de ticket)
+    // todos los productos físicos del carrito y, si son combos, sus
+    // insumos — esto también permite avisar de stock insuficiente ANTES de
+    // cobrar, en vez de simplemente dejar que stockActual caiga en negativo
+    // sin ningún aviso.
+    final List<String> idsProductosFisicos = _carrito
+        .where(
+          (it) =>
+              it['es_producto_fisico'] == true &&
+              (it['id'] as String? ?? '').isNotEmpty,
+        )
+        .map((it) => it['id'] as String)
+        .toSet()
+        .toList();
+
+    final Map<String, Map<String, dynamic>> prodDataPorId = {};
+    Future<void> cargarEnLotesDe30(List<String> ids) async {
+      for (var i = 0; i < ids.length; i += 30) {
+        final lote = ids.sublist(
+          i,
+          (i + 30 > ids.length) ? ids.length : i + 30,
+        );
+        final snap = await _firestore
+            .collection('inventario_general')
+            .where(FieldPath.documentId, whereIn: lote)
+            .get();
+        for (var doc in snap.docs) {
+          prodDataPorId[doc.id] = doc.data();
+        }
+      }
+    }
+
+    if (idsProductosFisicos.isNotEmpty) {
+      await cargarEnLotesDe30(idsProductosFisicos);
+    }
+
+    final Set<String> idsComponentes = {};
+    for (var id in idsProductosFisicos) {
+      final prodData = prodDataPorId[id];
+      if (prodData != null && prodData['esCombo'] == true) {
+        for (var comp in (prodData['componentes'] as List<dynamic>? ?? [])) {
+          final String subId =
+              comp['productoId'] ?? comp['itemInventarioId'] ?? '';
+          if (subId.isNotEmpty) idsComponentes.add(subId);
+        }
+      }
+    }
+    final idsComponentesFaltantes = idsComponentes
+        .where((id) => !prodDataPorId.containsKey(id))
+        .toList();
+    if (idsComponentesFaltantes.isNotEmpty) {
+      await cargarEnLotesDe30(idsComponentesFaltantes);
+    }
+
+    // 🚨 Aviso de stock insuficiente: no bloquea la venta (el cajero puede
+    // decidir continuar igual), sólo advierte antes de cobrar.
+    final List<String> avisosStock = [];
+    for (var item in _carrito) {
+      if (item['es_producto_fisico'] != true) continue;
+      final String itemId = item['id'] ?? '';
+      final int cantidadComprada = item['cantidad'] ?? 1;
+      final prodData = prodDataPorId[itemId];
+      if (prodData == null) continue;
+
+      if (prodData['esCombo'] == true) {
+        for (var comp in (prodData['componentes'] as List<dynamic>? ?? [])) {
+          final String subId =
+              comp['productoId'] ?? comp['itemInventarioId'] ?? '';
+          final subData = prodDataPorId[subId];
+          if (subData == null) continue;
+          final int cantComponente = (comp['cantidad'] as num?)?.toInt() ?? 1;
+          final double stockSub =
+              (subData['stockActual'] as num?)?.toDouble() ?? 0;
+          final int totalBaja = cantComponente * cantidadComprada;
+          if (totalBaja > stockSub) {
+            avisosStock.add(
+              '${subData['nombre'] ?? subId} (insumo de ${item['nombre']}): quedan ${stockSub.toStringAsFixed(0)}, se necesitan $totalBaja',
+            );
+          }
+        }
+      } else {
+        final double stock = (prodData['stockActual'] as num?)?.toDouble() ?? 0;
+        if (cantidadComprada > stock) {
+          avisosStock.add(
+            '${item['nombre']}: quedan ${stock.toStringAsFixed(0)}, se piden $cantidadComprada',
+          );
+        }
+      }
+    }
+
+    if (avisosStock.isNotEmpty) {
+      final bool continuar = await _confirmarVentaConStockInsuficiente(
+        avisosStock,
+      );
+      if (!continuar) return;
+    }
+
+    WriteBatch batch = _firestore.batch();
+    // 🚨 Se genera acá (antes de la venta) para poder referenciarla como
+    // 'referencia' en los movimientos_stock que se registran en el mismo
+    // batch, sin depender del orden en que Firestore asigna IDs.
+    final DocumentReference ventaRefParaMovimientos = _firestore
+        .collection('ventas_buffet')
+        .doc();
+    final String usuarioActualPos =
+        FirebaseAuth.instance.currentUser?.email ?? 'Caja';
 
     for (var item in _carrito) {
       final String itemId = item['id'];
@@ -1157,19 +1346,18 @@ class _PosCajaPageState extends State<PosCajaPage> {
 
       // 🍔 4. DESCUENTO DE STOCK DINÁMICO (PRODUCTO SIMPLE O COMBO / RECETA)
       if (item['es_producto_fisico'] == true && itemId.isNotEmpty) {
-        final prodDoc = await _firestore
-            .collection('inventario_general')
-            .doc(itemId)
-            .get();
-        if (prodDoc.exists) {
-          final prodData = prodDoc.data() as Map<String, dynamic>;
+        final prodData = prodDataPorId[itemId];
+        if (prodData != null) {
           final bool esComboReceta = prodData['esCombo'] == true;
           final List<dynamic> componentes = prodData['componentes'] ?? [];
 
           if (esComboReceta && componentes.isNotEmpty) {
             // 🔄 DESCUENTO DINÁMICO DE CADA INSUMO / RECETA
             for (var comp in componentes) {
-              final String subProdId = comp['productoId'] ?? '';
+              // 🚨 Combos creados desde "Central de Inventario" guardan la
+              // clave vieja 'itemInventarioId' en vez de 'productoId'.
+              final String subProdId =
+                  comp['productoId'] ?? comp['itemInventarioId'] ?? '';
               final int cantComponente =
                   (comp['cantidad'] as num?)?.toInt() ?? 1;
               if (subProdId.isNotEmpty) {
@@ -1180,6 +1368,15 @@ class _PosCajaPageState extends State<PosCajaPage> {
                 batch.update(subProdRef, {
                   'stockActual': FieldValue.increment(-totalBajaInsumo),
                 });
+                MovimientoStockService.registrarMovimientoEnBatch(
+                  batch,
+                  productoId: subProdId,
+                  productoNombre: 'Insumo de ${item['nombre']}',
+                  tipo: 'Venta POS (combo)',
+                  cantidad: -totalBajaInsumo,
+                  referencia: ventaRefParaMovimientos.id,
+                  usuario: usuarioActualPos,
+                );
               }
             }
           } else {
@@ -1190,6 +1387,15 @@ class _PosCajaPageState extends State<PosCajaPage> {
             batch.update(prodRef, {
               'stockActual': FieldValue.increment(-cantidadComprada),
             });
+            MovimientoStockService.registrarMovimientoEnBatch(
+              batch,
+              productoId: itemId,
+              productoNombre: item['nombre'] ?? prodData['nombre'] ?? itemId,
+              tipo: 'Venta POS',
+              cantidad: -cantidadComprada,
+              referencia: ventaRefParaMovimientos.id,
+              usuario: usuarioActualPos,
+            );
           }
 
           // Guardar metadatos en el ítem del carrito para la comanda de cocina
@@ -1202,11 +1408,26 @@ class _PosCajaPageState extends State<PosCajaPage> {
     String? caeFactura;
     if (_emitirFacturaFiscal) {
       try {
+        // 🧾 Concepto AFIP: el carrito puede mezclar productos (buffet) con
+        // servicios (cuota social/matrícula) — 1=Productos, 2=Servicios,
+        // 3=Ambos. Antes esto siempre mandaba Concepto=1 sin importar qué
+        // se estuviera cobrando.
+        final bool tieneServicio = _carrito.any(
+          (it) => it['esCuotaSocial'] == true || it['esMatricula'] == true,
+        );
+        final bool tieneProducto = _carrito.any(
+          (it) => it['esCuotaSocial'] != true && it['esMatricula'] != true,
+        );
+        final int concepto = tieneServicio && tieneProducto
+            ? 3
+            : (tieneServicio ? 2 : 1);
+
         final callable = cloud_functions.FirebaseFunctions.instance
             .httpsCallable('emitirFacturaArca');
         final resp = await callable.call({
           'total': totalCarrito,
           'socioDni': _socioSeleccionadoPOS?['dni'] ?? '',
+          'concepto': concepto,
         });
         if (resp.data['success'] == true) {
           caeFactura = resp.data['cae'];
@@ -1216,7 +1437,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
       }
     }
 
-    DocumentReference ventaRef = _firestore.collection('ventas_buffet').doc();
+    final DocumentReference ventaRef = ventaRefParaMovimientos;
     batch.set(ventaRef, {
       'items': _carrito,
       'total': totalCarrito,
@@ -1244,7 +1465,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
         'tipo': 'Consumo POS',
         'monto': -totalCarrito,
         'detalle':
-            'Consumo asignado a Cuenta Corriente ($_sectorCajaSeleccionado)',
+            'Consumo asignado a Cuenta Corriente en Punto de Venta (Caja) $_sectorCajaSeleccionado',
       });
       DocumentReference socioRef = _firestore
           .collection('socios')
@@ -1290,15 +1511,14 @@ class _PosCajaPageState extends State<PosCajaPage> {
       );
     }
 
-    setState(() {
-      _carrito.clear();
-      _socioSeleccionadoId = null;
-      _socioSeleccionadoPOS = null;
-      _mesaSeleccionadaNombre = null;
-      _reservasPendientesDelSocio = [];
-    });
-
     if (mounted) {
+      setState(() {
+        _carrito.clear();
+        _socioSeleccionadoId = null;
+        _socioSeleccionadoPOS = null;
+        _mesaSeleccionadaNombre = null;
+        _reservasPendientesDelSocio = [];
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('✅ Cobro registrado y comprobante emitido'),
@@ -1427,7 +1647,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
                             .snapshots(),
                         builder: (context, snapshot) {
                           List<String> opcionesCajas = [
-                            'Caja Buffet & POS Central',
+                            'Punto de Venta (Caja) Central',
                           ];
                           if (snapshot.hasData &&
                               snapshot.data!.docs.isNotEmpty) {
@@ -1458,7 +1678,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
                               color: Color(0xFF0F172A),
                             ),
                             style: const TextStyle(
-                              fontSize: 20,
+                              fontSize: 18,
                               fontWeight: FontWeight.bold,
                               color: Color(0xFF0F172A),
                             ),
@@ -1472,7 +1692,7 @@ class _PosCajaPageState extends State<PosCajaPage> {
                             items: opcionesCajas.map((String sector) {
                               return DropdownMenuItem<String>(
                                 value: sector,
-                                child: Text(sector),
+                                child: Text('Punto de Venta (Caja): $sector'),
                               );
                             }).toList(),
                           );
@@ -1648,7 +1868,15 @@ class _PosCajaPageState extends State<PosCajaPage> {
                       builder: (context, snapshot) {
                         if (!snapshot.hasData)
                           return const CircularProgressIndicator();
-                        final docs = snapshot.data!.docs;
+                        // 🚨 'disponible' se escribe (toggle manual y
+                        // auto-desactivación por stock 0 en Central de
+                        // Inventario) pero antes no se leía acá: un producto
+                        // deshabilitado seguía vendible indefinidamente en el
+                        // punto de venta.
+                        final docs = snapshot.data!.docs.where((d) {
+                          final data = d.data() as Map<String, dynamic>;
+                          return data['disponible'] != false;
+                        }).toList();
 
                         return GridView.builder(
                           gridDelegate:
@@ -1656,34 +1884,106 @@ class _PosCajaPageState extends State<PosCajaPage> {
                                 crossAxisCount: 4,
                                 crossAxisSpacing: 12,
                                 mainAxisSpacing: 12,
+                                childAspectRatio: 0.95,
                               ),
                           itemCount: docs.length,
                           itemBuilder: (context, i) {
                             final p = ProductoBuffetModel.fromFirestore(
                               docs[i],
                             );
-                            return InkWell(
-                              onTap: () {
-                                setState(() {
-                                  _carrito.add({
-                                    'id': p.id,
-                                    'nombre': p.nombre,
-                                    'precio': p.precio,
-                                    'cantidad': 1,
-                                    'es_producto_fisico': true,
+                            // 🎨 Antes: Card+Center+Column con sólo nombre y
+                            // precio, sin ninguna otra señal visual (combo,
+                            // stock bajo, categoría). Ahora la grilla da la
+                            // misma jerarquía y feedback que el resto del
+                            // rediseño (chip de categoría, badge de combo/
+                            // stock bajo, precio como protagonista).
+                            final bool stockBajo =
+                                !p.esCombo && p.stock <= p.stockMinimo;
+                            return Material(
+                              color: AppColors.surface,
+                              borderRadius: BorderRadius.circular(
+                                AppRadius.md,
+                              ),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(
+                                  AppRadius.md,
+                                ),
+                                onTap: () {
+                                  setState(() {
+                                    _carrito.add({
+                                      'id': p.id,
+                                      'nombre': p.nombre,
+                                      'precio': p.precio,
+                                      'cantidad': 1,
+                                      'es_producto_fisico': true,
+                                    });
                                   });
-                                });
-                              },
-                              child: Card(
-                                child: Center(
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(
+                                      AppRadius.md,
+                                    ),
+                                    border: Border.all(color: AppColors.line),
+                                  ),
                                   child: Column(
-                                    mainAxisSize: MainAxisSize.min,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
                                     children: [
-                                      Text(
-                                        p.nombre,
-                                        textAlign: TextAlign.center,
+                                      Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              p.categoria,
+                                              style: const TextStyle(
+                                                fontSize: 10.5,
+                                                fontWeight: FontWeight.w700,
+                                                color: AppColors.textMuted,
+                                                letterSpacing: 0.3,
+                                              ),
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                          if (p.esCombo)
+                                            const Icon(
+                                              Icons.fastfood_rounded,
+                                              size: 14,
+                                              color: AppColors.teal,
+                                            )
+                                          else if (stockBajo)
+                                            const Icon(
+                                              Icons.error_outline_rounded,
+                                              size: 14,
+                                              color: AppColors.warning,
+                                            ),
+                                        ],
                                       ),
-                                      Text('\$${p.precio.toStringAsFixed(0)}'),
+                                      const SizedBox(height: 6),
+                                      Expanded(
+                                        child: Text(
+                                          p.nombre,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            fontSize: 13.5,
+                                            fontWeight: FontWeight.w600,
+                                            color: AppColors.textPrimary,
+                                            height: 1.2,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        '\$${p.precio.toStringAsFixed(0)}',
+                                        style: const TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.w800,
+                                          color: AppColors.tealDark,
+                                        ),
+                                      ),
                                     ],
                                   ),
                                 ),
@@ -1701,83 +2001,168 @@ class _PosCajaPageState extends State<PosCajaPage> {
           Expanded(
             flex: 2,
             child: Container(
-              color: Colors.white,
+              decoration: const BoxDecoration(
+                color: AppColors.surface,
+                border: Border(left: BorderSide(color: AppColors.line)),
+              ),
               padding: const EdgeInsets.all(24),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
-                    'Resumen de Ticket',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.receipt_long_rounded,
+                        color: AppColors.navy,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Resumen de Ticket',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const Spacer(),
+                      if (_carrito.isNotEmpty)
+                        StatusBadge(
+                          label: '${_carrito.length} ítems',
+                          color: AppColors.teal,
+                        ),
+                    ],
                   ),
                   const SizedBox(height: 16),
                   Expanded(
-                    child: ListView.builder(
-                      itemCount: _carrito.length,
-                      itemBuilder: (context, i) {
-                        final item = _carrito[i];
-                        return ListTile(
-                          title: Text(item['nombre']),
-                          subtitle: Text('Monto: \$${item['precio']}'),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                icon: const Icon(
-                                  Icons.edit,
-                                  color: Colors.blue,
+                    child: _carrito.isEmpty
+                        ? Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  Icons.shopping_cart_outlined,
+                                  size: 40,
+                                  color: AppColors.textMuted,
                                 ),
-                                onPressed: () => _editarPrecioItem(i),
-                              ),
-                              IconButton(
-                                icon: const Icon(
-                                  Icons.delete,
-                                  color: Colors.red,
+                                const SizedBox(height: 10),
+                                const Text(
+                                  'El ticket está vacío',
+                                  style: TextStyle(
+                                    color: AppColors.textSecondary,
+                                    fontSize: 13,
+                                  ),
                                 ),
-                                onPressed: () =>
-                                    setState(() => _carrito.removeAt(i)),
-                              ),
-                            ],
+                              ],
+                            ),
+                          )
+                        : ListView.separated(
+                            itemCount: _carrito.length,
+                            separatorBuilder: (_, _) =>
+                                const Divider(height: 1),
+                            itemBuilder: (context, i) {
+                              final item = _carrito[i];
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 10,
+                                ),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            item['nombre'],
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.w600,
+                                              fontSize: 13.5,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            '\$${item['precio']} c/u',
+                                            style: const TextStyle(
+                                              color: AppColors.textSecondary,
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    IconButton(
+                                      visualDensity: VisualDensity.compact,
+                                      icon: const Icon(
+                                        Icons.edit_rounded,
+                                        color: AppColors.info,
+                                        size: 18,
+                                      ),
+                                      onPressed: () => _editarPrecioItem(i),
+                                    ),
+                                    IconButton(
+                                      visualDensity: VisualDensity.compact,
+                                      icon: const Icon(
+                                        Icons.delete_outline_rounded,
+                                        color: AppColors.danger,
+                                        size: 18,
+                                      ),
+                                      onPressed: () =>
+                                          setState(() => _carrito.removeAt(i)),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
                           ),
-                        );
-                      },
-                    ),
                   ),
                   const Divider(),
                   if (_mesaSeleccionadaNombre != null)
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.blueGrey,
-                        minimumSize: const Size.fromHeight(40),
-                      ),
-                      onPressed: _guardarCambiosEnMesa,
-                      icon: const Icon(Icons.save, color: Colors.white),
-                      label: const Text(
-                        'Guardar Mesa',
-                        style: TextStyle(color: Colors.white),
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          minimumSize: const Size.fromHeight(44),
+                        ),
+                        onPressed: _guardarCambiosEnMesa,
+                        icon: const Icon(Icons.save_outlined, size: 18),
+                        label: const Text('Guardar Mesa'),
                       ),
                     ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'TOTAL: \$${totalCarrito.toStringAsFixed(2)}',
-                    style: const TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.green,
-                    ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      const Text(
+                        'TOTAL',
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.textSecondary,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                      Text(
+                        '\$${totalCarrito.toStringAsFixed(2)}',
+                        style: const TextStyle(
+                          fontSize: 26,
+                          fontWeight: FontWeight.w800,
+                          color: AppColors.tealDark,
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 16),
-                  ElevatedButton(
+                  ElevatedButton.icon(
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF0F172A),
-                      minimumSize: const Size.fromHeight(50),
+                      minimumSize: const Size.fromHeight(52),
                     ),
                     onPressed: _carrito.isEmpty
                         ? null
                         : _verificarYProcesarCobro,
-                    child: const Text(
+                    icon: const Icon(Icons.point_of_sale_rounded, size: 20),
+                    label: const Text(
                       'Cobrar Venta',
-                      style: TextStyle(color: Colors.white),
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 15,
+                      ),
                     ),
                   ),
                 ],

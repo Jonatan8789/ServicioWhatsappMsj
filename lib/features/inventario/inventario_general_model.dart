@@ -17,7 +17,14 @@ class ComponenteComboGeneral {
   }
 
   Map<String, dynamic> toMap() {
-    return {'itemInventarioId': itemInventarioId, 'cantidad': cantidad};
+    return {
+      // 🚨 'productoId' es la clave canónica que pos_caja_page.dart lee al
+      // descontar stock de combos; se mantiene 'itemInventarioId' por
+      // compatibilidad con combos ya guardados con la clave vieja.
+      'productoId': itemInventarioId,
+      'itemInventarioId': itemInventarioId,
+      'cantidad': cantidad,
+    };
   }
 }
 

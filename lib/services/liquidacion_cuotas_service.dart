@@ -1,9 +1,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:natatorio_app/features/socios/socio_model.dart';
 import 'package:natatorio_app/features/tarifas/tarifa_model.dart';
+import 'package:natatorio_app/services/familia_service.dart';
 
 class LiquidacionCuotasService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FamiliaService _familiaService = FamiliaService();
 
   Future<Map<String, dynamic>> generarCuotasPeriodo({
     required String periodo, // "YYYY-MM"
@@ -28,6 +30,38 @@ class LiquidacionCuotasService {
           .collection('socios')
           .where('activo', isEqualTo: true)
           .get();
+
+      // 🚀 OPTIMIZACIÓN: antes esto hacía 2-3 lecturas de Firestore POR
+      // SOCIO dentro del loop (verificación de cuota paga, verificación de
+      // movimiento ya generado, conteo de grupo familiar) — con 500+ socios
+      // activos eso son 1000-1500+ round-trips seriales antes de escribir
+      // nada. Ahora se resuelve todo con 2 consultas `collectionGroup` (una
+      // sola vez, fuera del loop) más un cálculo en memoria para el tamaño
+      // de cada grupo familiar a partir de los socios activos ya cargados.
+      final cuotasPagasSnap = await _firestore
+          .collectionGroup('cuotas_pagas')
+          .where('periodo', isEqualTo: periodo)
+          .get();
+      final Set<String> sociosConCuotaPaga = cuotasPagasSnap.docs
+          .map((d) => d.reference.parent.parent!.id)
+          .toSet();
+
+      final movimientosPeriodoSnap = await _firestore
+          .collectionGroup('cuenta_corriente')
+          .where('periodo', isEqualTo: periodo)
+          .get();
+      final Set<String> sociosConMovimientoPeriodo = movimientosPeriodoSnap
+          .docs
+          .map((d) => d.reference.parent.parent!.id)
+          .toSet();
+
+      final Map<String, int> tamanoGrupoFamiliar = {};
+      for (var doc in sociosSnap.docs) {
+        final String? grupo = doc.data()['grupoFamiliarId']?.toString();
+        if (grupo != null && grupo.isNotEmpty) {
+          tamanoGrupoFamiliar[grupo] = (tamanoGrupoFamiliar[grupo] ?? 0) + 1;
+        }
+      }
 
       WriteBatch batch = _firestore.batch();
       int contadorBatch = 0;
@@ -58,38 +92,37 @@ class LiquidacionCuotasService {
           continue;
         }
 
-        // 📌 3. VERIFICACIÓN ANTI-DUPLICACIÓN
-        final cuotaPagaSnap = await _firestore
-            .collection('socios')
-            .doc(socio.id)
-            .collection('cuotas_pagas')
-            .doc(periodo)
-            .get();
-
-        if (cuotaPagaSnap.exists) {
+        // 📌 3. VERIFICACIÓN ANTI-DUPLICACIÓN (resuelta arriba, sin I/O acá)
+        if (sociosConCuotaPaga.contains(socio.id) ||
+            sociosConMovimientoPeriodo.contains(socio.id)) {
           omitidosYaExistentes++;
           continue;
         }
 
-        final cuotaExistenteSnap = await _firestore
-            .collection('socios')
-            .doc(socio.id)
-            .collection('cuenta_corriente')
-            .where('periodo', isEqualTo: periodo)
-            .limit(1)
-            .get();
-
-        if (cuotaExistenteSnap.docs.isNotEmpty) {
-          omitidosYaExistentes++;
-          continue;
-        }
-
-        // 4. Cálculo de montos
-        double descuentoMonto = 0.0;
+        // 4. Cálculo de montos — descuento escolar vs. familiar NO se
+        // acumulan (se aplica el mayor de los dos) para evitar descuentos
+        // compuestos fuera de control.
+        double descuentoPorcentaje = 0.0;
+        String? motivoDescuento;
         if (socio.esEstudianteEscuela && socio.descuentoEscolarPorcentaje > 0) {
-          descuentoMonto =
-              precioBase * (socio.descuentoEscolarPorcentaje / 100);
+          descuentoPorcentaje = socio.descuentoEscolarPorcentaje;
+          motivoDescuento = 'Escolar';
         }
+
+        if (socio.grupoFamiliarId != null &&
+            socio.grupoFamiliarId!.isNotEmpty) {
+          final int integrantes =
+              tamanoGrupoFamiliar[socio.grupoFamiliarId!] ?? 0;
+          final double descuentoFamiliar = _familiaService.descuentoPorTamano(
+            integrantes,
+          );
+          if (descuentoFamiliar > descuentoPorcentaje) {
+            descuentoPorcentaje = descuentoFamiliar;
+            motivoDescuento = 'Familiar';
+          }
+        }
+
+        final double descuentoMonto = precioBase * (descuentoPorcentaje / 100);
         final double montoFinal = precioBase - descuentoMonto;
 
         final DocumentReference docMovimientoRef = _firestore
@@ -100,9 +133,9 @@ class LiquidacionCuotasService {
 
         String detalleConcepto =
             'Cuota Mensual $nombreMes - ${socio.deporte} (${socio.frecuencia})';
-        if (socio.esEstudianteEscuela && socio.descuentoEscolarPorcentaje > 0) {
+        if (descuentoPorcentaje > 0) {
           detalleConcepto +=
-              ' [Dto. Escolar ${socio.descuentoEscolarPorcentaje.toStringAsFixed(0)}%]';
+              ' [Dto. $motivoDescuento ${descuentoPorcentaje.toStringAsFixed(0)}%]';
         }
 
         batch.set(docMovimientoRef, {

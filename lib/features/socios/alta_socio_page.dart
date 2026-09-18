@@ -123,14 +123,36 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
     }
   }
 
+  // 🚨 Antes no había ningún límite: se podía adjuntar una foto/escaneo de
+  // varias decenas de MB sin aviso, lento en Flutter Web e infla el costo de
+  // Storage sin necesidad.
+  static const int _tamanioMaximoBytes = 8 * 1024 * 1024; // 8 MB
+
+  bool _archivoDentroDelLimite(int bytes) {
+    if (bytes <= _tamanioMaximoBytes) return true;
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'El archivo supera los 8 MB permitidos. Elegí uno más liviano.',
+          ),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+    return false;
+  }
+
   Future<void> _seleccionarFoto() async {
     final resultado = await FilePicker.pickFiles(
       type: FileType.image,
       withData: true,
     );
     if (resultado != null && resultado.files.first.bytes != null) {
+      final bytes = resultado.files.first.bytes!;
+      if (!_archivoDentroDelLimite(bytes.length)) return;
       setState(() {
-        _fotoBytes = resultado.files.first.bytes;
+        _fotoBytes = bytes;
         _fotoNombre = resultado.files.first.name;
       });
     }
@@ -143,14 +165,18 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
       withData: true,
     );
     if (resultado != null && resultado.files.first.bytes != null) {
+      final bytes = resultado.files.first.bytes!;
+      if (!_archivoDentroDelLimite(bytes.length)) return;
       setState(() {
-        _aptoBytes = resultado.files.first.bytes;
+        _aptoBytes = bytes;
         _aptoNombre = resultado.files.first.name;
       });
     }
   }
 
-  Future<String> _subirArchivo(
+  // 🚨 Antes devolvía '' en error, indistinguible de "no había nada para
+  // subir": el llamador no podía saber si el upload realmente falló.
+  Future<String?> _subirArchivo(
     Uint8List bytes,
     String carpeta,
     String prefijo,
@@ -174,7 +200,7 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
       return await uploadTask.ref.getDownloadURL();
     } catch (e) {
       debugPrint('Error subiendo archivo: $e');
-      return '';
+      return null;
     }
   }
 
@@ -246,6 +272,37 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
     );
   }
 
+  // 🚨 Antes: `docs.length + 1` — releía TODA la colección en cada alta y
+  // dos altas simultáneas podían calcular el mismo número. Ahora usa un
+  // contador atómico (transacción de Firestore), que además bootstrapea
+  // desde la cantidad actual de socios la primera vez que se usa, para no
+  // colisionar con la numeración manual/migrada previa.
+  Future<String> _obtenerProximoNumeroSocio() async {
+    final db = FirebaseFirestore.instance;
+    final contadorRef = db.collection('configuracion').doc('contador_socios');
+
+    final contadorSnap = await contadorRef.get();
+    int? valorInicialBootstrap;
+    if (!contadorSnap.exists) {
+      final totalActual = await db.collection('socios').count().get();
+      valorInicialBootstrap = (totalActual.count ?? 0) + 1;
+    }
+
+    final int siguiente = await db.runTransaction<int>((tx) async {
+      final snap = await tx.get(contadorRef);
+      final int valor =
+          (snap.exists && snap.data()?['siguienteNumero'] != null)
+          ? (snap.data()!['siguienteNumero'] as num).toInt()
+          : (valorInicialBootstrap ?? 1);
+      tx.set(contadorRef, {
+        'siguienteNumero': valor + 1,
+      }, SetOptions(merge: true));
+      return valor;
+    });
+
+    return siguiente.toString().padLeft(4, '0');
+  }
+
   Future<void> _guardarSocio() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -254,31 +311,39 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
     try {
       String fotoUrlFinal = '';
       String aptoUrlFinal = '';
+      bool fotoFallo = false;
+      bool aptoFallo = false;
       final dni = _dniController.text.trim();
       final nombreSocio = _nombreController.text.trim();
 
       if (_fotoBytes != null && _fotoNombre != null) {
-        fotoUrlFinal = await _subirArchivo(
+        final resultado = await _subirArchivo(
           _fotoBytes!,
           'socios/fotos',
           dni.isEmpty ? 'foto' : dni,
           _fotoNombre!,
         );
+        if (resultado != null) {
+          fotoUrlFinal = resultado;
+        } else {
+          fotoFallo = true;
+        }
       }
       if (_aptoBytes != null && _aptoNombre != null) {
-        aptoUrlFinal = await _subirArchivo(
+        final resultado = await _subirArchivo(
           _aptoBytes!,
           'socios/aptos',
           dni.isEmpty ? 'apto' : dni,
           _aptoNombre!,
         );
+        if (resultado != null) {
+          aptoUrlFinal = resultado;
+        } else {
+          aptoFallo = true;
+        }
       }
 
-      final querySocios = await FirebaseFirestore.instance
-          .collection('socios')
-          .get();
-      final numCorrelativo = querySocios.docs.length + 1;
-      final numeroSocioStr = numCorrelativo.toString().padLeft(4, '0');
+      final numeroSocioStr = await _obtenerProximoNumeroSocio();
 
       final nuevoDocSocioRef = FirebaseFirestore.instance
           .collection('socios')
@@ -328,6 +393,19 @@ class _AltaSocioPageState extends State<AltaSocioPage> {
 
       if (mounted) {
         setState(() => _guardando = false);
+        if (fotoFallo || aptoFallo) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Socio guardado, pero ${[
+                  if (fotoFallo) 'la foto',
+                  if (aptoFallo) 'el apto médico',
+                ].join(' y ')} no se pudo subir. Podés reintentarlo luego editando la ficha.',
+              ),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
         _mostrarConfirmacionSocio(numeroSocioStr, nombreSocio);
       }
     } catch (e) {

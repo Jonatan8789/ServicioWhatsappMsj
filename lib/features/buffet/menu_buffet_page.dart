@@ -171,6 +171,10 @@ class _MenuBuffetPageState extends State<MenuBuffetPage> {
         ? List<ComponenteCombo>.from(producto!.componentes)
         : [];
 
+    // 🚨 Estos 8 controllers no vivían en un State, así que no había
+    // dispose() posible por el camino habitual: se liberan acá apenas el
+    // diálogo se cierra, sin importar por qué botón (Guardar, Cancelar,
+    // tocar afuera, o el botón atrás).
     showDialog(
       context: context,
       builder: (context) {
@@ -181,8 +185,8 @@ class _MenuBuffetPageState extends State<MenuBuffetPage> {
                   ? 'Nuevo Artículo / Combo'
                   : 'Editar Artículo / Combo',
             ),
-            content: SizedBox(
-              width: 600,
+            content: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 600),
               child: Form(
                 key: formKey,
                 child: SingleChildScrollView(
@@ -590,7 +594,16 @@ class _MenuBuffetPageState extends State<MenuBuffetPage> {
           ),
         );
       },
-    );
+    ).then((_) {
+      nombreCtrl.dispose();
+      descCtrl.dispose();
+      precioCtrl.dispose();
+      precioCostoCtrl.dispose();
+      stockCtrl.dispose();
+      stockMinimoCtrl.dispose();
+      codBarrasCtrl.dispose();
+      codInternoCtrl.dispose();
+    });
   }
 
   @override

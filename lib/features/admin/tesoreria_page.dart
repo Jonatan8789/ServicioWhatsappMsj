@@ -33,9 +33,14 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
           .snapshots(),
       builder: (context, snapVentas) {
         return StreamBuilder<QuerySnapshot>(
+          // 🚨 El escritor real (orden_pago_dialog.dart) usa la colección
+          // 'compras_ordenes_pago' y el campo 'fechaPago', no
+          // 'ordenes_de_pago'/'fecha' — con los nombres viejos esta consulta
+          // nunca traía documentos y "Balance Neto Caja" quedaba siempre
+          // sobrestimado por el total de cada pago a proveedores del día.
           stream: _firestore
-              .collection('ordenes_de_pago')
-              .where('fecha', isGreaterThanOrEqualTo: inicioHoy)
+              .collection('compras_ordenes_pago')
+              .where('fechaPago', isGreaterThanOrEqualTo: inicioHoy)
               .snapshots(),
           builder: (context, snapOP) {
             if (!snapVentas.hasData || !snapOP.hasData) {
@@ -58,8 +63,7 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
 
             for (var doc in snapOP.data!.docs) {
               final op = doc.data() as Map<String, dynamic>;
-              totalEgresosOP +=
-                  (op['montoNetoPago'] as num?)?.toDouble() ?? 0.0;
+              totalEgresosOP += (op['montoPagado'] as num?)?.toDouble() ?? 0.0;
             }
 
             final double balanceCajaNeto =

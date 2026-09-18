@@ -99,8 +99,8 @@ class _ProveedoresAbmDialogState extends State<ProveedoresAbmDialog> {
         esEdicion ? 'Editar Proveedor' : 'Nuevo Proveedor en Padrón',
         style: const TextStyle(fontWeight: FontWeight.bold),
       ),
-      content: SizedBox(
-        width: 850,
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 850),
         child: SingleChildScrollView(
           child: Form(
             key: _formKey,

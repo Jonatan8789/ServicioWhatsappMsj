@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 
 class ServicioMensajeriaPage extends StatefulWidget {
@@ -51,11 +52,24 @@ class _ServicioMensajeriaPageState extends State<ServicioMensajeriaPage> {
     });
   }
 
+  /// El servidor ahora exige el ID token de Firebase de un admin en estas
+  /// rutas (antes cualquiera con la URL de Render podía llamarlas).
+  Future<Map<String, String>> _headersAutenticados() async {
+    final token = await FirebaseAuth.instance.currentUser?.getIdToken();
+    return {
+      'Content-Type': 'application/json',
+      if (token != null) 'Authorization': 'Bearer $token',
+    };
+  }
+
   Future<void> _consultarEstado({bool silencioso = false}) async {
     if (!silencioso) setState(() => _cargando = true);
     try {
       final res = await http
-          .get(Uri.parse('$_backendUrl/status'))
+          .get(
+            Uri.parse('$_backendUrl/status'),
+            headers: await _headersAutenticados(),
+          )
           .timeout(const Duration(seconds: 60));
 
       if (res.statusCode == 200) {
@@ -88,7 +102,10 @@ class _ServicioMensajeriaPageState extends State<ServicioMensajeriaPage> {
     setState(() => _cargando = true);
     try {
       final res = await http
-          .post(Uri.parse('$_backendUrl/qr'))
+          .post(
+            Uri.parse('$_backendUrl/qr'),
+            headers: await _headersAutenticados(),
+          )
           .timeout(const Duration(seconds: 60));
 
       if (res.statusCode == 200) {
@@ -147,7 +164,10 @@ class _ServicioMensajeriaPageState extends State<ServicioMensajeriaPage> {
     setState(() => _cargando = true);
     try {
       await http
-          .post(Uri.parse('$_backendUrl/logout'))
+          .post(
+            Uri.parse('$_backendUrl/logout'),
+            headers: await _headersAutenticados(),
+          )
           .timeout(const Duration(seconds: 30));
       await Future.delayed(const Duration(seconds: 3));
       await _consultarEstado();

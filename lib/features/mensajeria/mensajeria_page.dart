@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'package:http/http.dart' as http;
 import '../admin/servicio_mensajeria_page.dart';
@@ -33,10 +34,31 @@ class _MensajeriaPageState extends State<MensajeriaPage> {
   List<String> _listaDeportes = [];
   final List<Map<String, dynamic>> _sociosSeleccionadosManualmente = [];
 
+  // 🚨 Antes optionsBuilder pedía TODA la colección 'socios' en cada tecla
+  // tipeada. Se cachea una sola vez y se filtra en memoria.
+  List<Map<String, dynamic>>? _todosSociosCache;
+
   @override
   void initState() {
     super.initState();
     _cargarDeportes();
+  }
+
+  Future<List<Map<String, dynamic>>> _obtenerSociosCache() async {
+    if (_todosSociosCache != null) return _todosSociosCache!;
+    final snap = await _firestore.collection('socios').get();
+    _todosSociosCache = snap.docs
+        .map((doc) => {'id': doc.id, ...doc.data()})
+        .toList();
+    return _todosSociosCache!;
+  }
+
+  @override
+  void dispose() {
+    _tituloController.dispose();
+    _mensajeController.dispose();
+    _busquedaSocioController.dispose();
+    super.dispose();
   }
 
   Future<void> _cargarDeportes() async {
@@ -53,11 +75,24 @@ class _MensajeriaPageState extends State<MensajeriaPage> {
     } catch (_) {}
   }
 
+  /// El servicio de WhatsApp ahora exige el ID token de Firebase de un admin
+  /// (antes cualquiera con la URL de Render podía llamarlo sin autenticarse).
+  Future<Map<String, String>> _headersAutenticados() async {
+    final token = await FirebaseAuth.instance.currentUser?.getIdToken();
+    return {
+      'Content-Type': 'application/json',
+      if (token != null) 'Authorization': 'Bearer $token',
+    };
+  }
+
   /// Despierta/Verifica el servidor de Render antes de iniciar los envíos
   Future<bool> _asegurarServidorActivo() async {
     try {
       final res = await http
-          .get(Uri.parse('$baseUrl/status'))
+          .get(
+            Uri.parse('$baseUrl/status'),
+            headers: await _headersAutenticados(),
+          )
           .timeout(const Duration(seconds: 60));
       return res.statusCode == 200;
     } catch (e) {
@@ -267,13 +302,8 @@ class _MensajeriaPageState extends State<MensajeriaPage> {
                                   }
                                   final query = textEditingValue.text
                                       .toLowerCase();
-                                  final snap = await _firestore
-                                      .collection('socios')
-                                      .get();
-                                  return snap.docs
-                                      .map(
-                                        (doc) => {'id': doc.id, ...doc.data()},
-                                      )
+                                  final todos = await _obtenerSociosCache();
+                                  return todos
                                       .where((socio) {
                                         final nombre = (socio['nombre'] ?? '')
                                             .toString()
@@ -681,7 +711,7 @@ class _MensajeriaPageState extends State<MensajeriaPage> {
       final response = await http
           .post(
             Uri.parse('$baseUrl/send-whatsapp'),
-            headers: {'Content-Type': 'application/json'},
+            headers: await _headersAutenticados(),
             body: jsonEncode({'phone': limpio, 'message': mensaje}),
           )
           .timeout(const Duration(seconds: 30));

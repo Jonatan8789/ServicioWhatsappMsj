@@ -4,6 +4,9 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:printing/printing.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
+import 'package:intl/intl.dart';
+import '../../shared/csv_utils.dart';
+import '../../shared/csv_download.dart';
 
 class ExploradorVentasPage extends StatefulWidget {
   const ExploradorVentasPage({Key? key}) : super(key: key);
@@ -15,6 +18,54 @@ class ExploradorVentasPage extends StatefulWidget {
 class _ExploradorVentasPageState extends State<ExploradorVentasPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   String _filtroEstado = 'Todos';
+
+  Future<void> _exportarCsv(BuildContext context) async {
+    final snap = await _firestore
+        .collection('ventas_buffet')
+        .orderBy('fecha', descending: true)
+        .get();
+    final docs = snap.docs.where((d) {
+      final data = d.data();
+      final bool fiscalizado = data['fiscalizado'] == true;
+      if (_filtroEstado == 'Fiscalizados') return fiscalizado;
+      if (_filtroEstado == 'Pendientes') return !fiscalizado;
+      return true;
+    });
+
+    final filas = docs.map((d) {
+      final v = d.data();
+      final List items = v['items'] ?? [];
+      final detalle = items.map((it) => '${it['cantidad']}x ${it['nombre']}').join(' | ');
+      final fecha = (v['fecha'] as Timestamp?)?.toDate();
+      return [
+        fecha != null ? DateFormat('dd/MM/yyyy HH:mm').format(fecha) : '',
+        (v['total'] as num?)?.toStringAsFixed(2) ?? '0.00',
+        v['medio_pago'] ?? '',
+        v['nombreCajaTerminal'] ?? '',
+        v['fiscalizado'] == true ? 'Fiscalizado' : 'No Fiscal',
+        v['cae'] ?? '',
+        detalle,
+      ];
+    }).toList();
+
+    final csv = generarCsv(
+      ['Fecha', 'Total', 'Medio de Pago', 'Caja', 'Estado', 'CAE', 'Detalle'],
+      filas,
+    );
+
+    try {
+      descargarCsv(
+        'ventas_${DateFormat('yyyy-MM-dd').format(DateTime.now())}.csv',
+        csv,
+      );
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No se pudo exportar: $e')),
+        );
+      }
+    }
+  }
 
   void _mostrarTicketFiscalDialog(Map<String, dynamic> venta) {
     final bool esFiscal = venta['cae'] != null && venta['cae'] != 'NO_FISCAL_X';
@@ -351,6 +402,12 @@ class _ExploradorVentasPageState extends State<ExploradorVentasPage> {
                 ChoiceChip(label: const Text('🟢 Fiscalizados'), selected: _filtroEstado == 'Fiscalizados', selectedColor: Colors.green.shade100, onSelected: (_) => setState(() => _filtroEstado = 'Fiscalizados')),
                 const SizedBox(width: 8),
                 ChoiceChip(label: const Text('🔴 Pendientes / No Fiscales'), selected: _filtroEstado == 'Pendientes', selectedColor: Colors.red.shade100, onSelected: (_) => setState(() => _filtroEstado = 'Pendientes')),
+                const Spacer(),
+                OutlinedButton.icon(
+                  onPressed: () => _exportarCsv(context),
+                  icon: const Icon(Icons.download_rounded, size: 18),
+                  label: const Text('Exportar CSV'),
+                ),
               ],
             ),
           ),

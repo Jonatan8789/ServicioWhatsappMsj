@@ -1,5 +1,8 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:intl/intl.dart';
 
 // Modelo auxiliar para el desglose dinámico de percepciones de IIBB
@@ -51,6 +54,12 @@ class _NuevaFacturaCompraDialogState extends State<NuevaFacturaCompraDialog> {
     ItemPercepcionIIBB(jurisdiccion: 'ARBA (Bs. As.)'),
   ];
 
+  // 📎 Comprobante adjunto (PDF/foto) — respaldo del comprobante original.
+  static const int _tamanioMaximoBytes = 8 * 1024 * 1024; // 8 MB
+  Uint8List? _comprobanteBytes;
+  String? _comprobanteNombre;
+  bool _guardando = false;
+
   final List<String> _jurisdiccionesDisponibles = [
     'ARBA (Bs. As.)',
     'AGIP (CABA)',
@@ -87,8 +96,8 @@ class _NuevaFacturaCompraDialogState extends State<NuevaFacturaCompraDialog> {
           ),
         ],
       ),
-      content: SizedBox(
-        width: 850,
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 850),
         child: SingleChildScrollView(
           child: Form(
             key: _formKey,
@@ -402,9 +411,52 @@ class _NuevaFacturaCompraDialogState extends State<NuevaFacturaCompraDialog> {
                     ),
                   ],
                 ),
+                const SizedBox(height: 20),
+
+                // 5️⃣ COMPROBANTE ADJUNTO
+                _seccionTitulo('5. Comprobante Adjunto (Respaldo)'),
+                Row(
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: _seleccionarComprobante,
+                      icon: const Icon(Icons.attach_file_rounded, size: 18),
+                      label: Text(
+                        _comprobanteNombre == null
+                            ? 'Adjuntar PDF / Foto'
+                            : 'Cambiar Archivo',
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    if (_comprobanteNombre != null) ...[
+                      Expanded(
+                        child: Text(
+                          _comprobanteNombre!,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.teal,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, size: 18, color: Colors.red),
+                        tooltip: 'Quitar adjunto',
+                        onPressed: () => setState(() {
+                          _comprobanteBytes = null;
+                          _comprobanteNombre = null;
+                        }),
+                      ),
+                    ] else
+                      const Text(
+                        'Opcional, pero recomendado para auditoría.',
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                  ],
+                ),
                 const SizedBox(height: 24),
 
-                // 5️⃣ RESUMEN CONSOLIDADO DE TOTALES
+                // 6️⃣ RESUMEN CONSOLIDADO DE TOTALES
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
@@ -468,7 +520,7 @@ class _NuevaFacturaCompraDialogState extends State<NuevaFacturaCompraDialog> {
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.pop(context),
+          onPressed: _guardando ? null : () => Navigator.pop(context),
           child: const Text('Cancelar'),
         ),
         ElevatedButton(
@@ -477,14 +529,75 @@ class _NuevaFacturaCompraDialogState extends State<NuevaFacturaCompraDialog> {
             foregroundColor: Colors.white,
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
           ),
-          onPressed: _guardarFacturaCompra,
-          child: const Text(
-            'Guardar e Imputar Cta. Cte.',
-            style: TextStyle(fontWeight: FontWeight.bold),
-          ),
+          onPressed: _guardando ? null : _guardarFacturaCompra,
+          child: _guardando
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
+              : const Text(
+                  'Guardar e Imputar Cta. Cte.',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
         ),
       ],
     );
+  }
+
+  Future<void> _seleccionarComprobante() async {
+    final resultado = await FilePicker.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png'],
+      withData: true,
+    );
+    if (resultado != null && resultado.files.first.bytes != null) {
+      final bytes = resultado.files.first.bytes!;
+      if (bytes.length > _tamanioMaximoBytes) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'El archivo supera los 8 MB permitidos. Elegí uno más liviano.',
+              ),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+      setState(() {
+        _comprobanteBytes = bytes;
+        _comprobanteNombre = resultado.files.first.name;
+      });
+    }
+  }
+
+  Future<String?> _subirComprobante() async {
+    if (_comprobanteBytes == null || _comprobanteNombre == null) return null;
+    try {
+      final extension = _comprobanteNombre!.contains('.')
+          ? _comprobanteNombre!.split('.').last.toLowerCase()
+          : 'pdf';
+      final nombreFinal =
+          'compra_${DateTime.now().millisecondsSinceEpoch}.$extension';
+      final ref = FirebaseStorage.instance.ref().child(
+        'compras_facturas/$nombreFinal',
+      );
+      final metadata = SettableMetadata(
+        contentType: extension == 'pdf'
+            ? 'application/pdf'
+            : 'image/$extension',
+      );
+      final uploadTask = await ref.putData(_comprobanteBytes!, metadata);
+      return await uploadTask.ref.getDownloadURL();
+    } catch (e) {
+      debugPrint('Error subiendo comprobante de compra: $e');
+      return null;
+    }
   }
 
   // AUXILIARES DE INTERFAZ
@@ -608,56 +721,106 @@ class _NuevaFacturaCompraDialogState extends State<NuevaFacturaCompraDialog> {
   Future<void> _guardarFacturaCompra() async {
     if (!_formKey.currentState!.validate()) return;
 
-    final batch = _firestore.batch();
-    final docFacturaRef = _firestore.collection('compras_facturas').doc();
+    final String numeroTrim = _numeroComprobante.trim();
 
-    final List<Map<String, dynamic>> iibbDesglosado = _listaPercepcionesIIBB
-        .where((item) => item.monto > 0)
-        .map((item) => {'jurisdiccion': item.jurisdiccion, 'monto': item.monto})
-        .toList();
+    setState(() => _guardando = true);
 
-    final dataFactura = {
-      'proveedorId': _proveedorIdSeleccionado,
-      'tipoComprobante': _tipoComprobante,
-      'numeroComprobante': _numeroComprobante,
-      'cuitProveedor': _cuitProveedor,
-      'razonSocialProveedor': _razonSocialProveedor,
-      'fechaEmision': Timestamp.fromDate(_fechaEmision),
-      'fechaVencimiento': Timestamp.fromDate(_fechaVencimiento),
-      'netoGravado21': _neto21,
-      'netoGravado105': _neto105,
-      'netoGravado27': _neto27,
-      'netoGravadoTotal': _totalNeto,
-      'ivaTotal': _totalIVA,
-      'exento': _exento,
-      'percepcionesIIBBDesglose': iibbDesglosado,
-      'percepcionIIBBTotal': _totalIIBB,
-      'percepcionIVA': _percepcionIVA,
-      'percepcionGanancias': _percepcionGanancias,
-      'percepcionesTotal': _totalPercepciones,
-      'montoTotal': _montoTotal,
-      'saldoPendiente': _montoTotal,
-      'estadoPago': 'PENDIENTE',
-      'creadoEl': FieldValue.serverTimestamp(),
-    };
+    try {
+      // 🚨 VALIDACIÓN ANTI-DUPLICADOS: antes se podía cargar dos veces el
+      // mismo comprobante de un proveedor sin ningún aviso, duplicando la
+      // deuda y el crédito fiscal.
+      final duplicadoSnap = await _firestore
+          .collection('compras_facturas')
+          .where('proveedorId', isEqualTo: _proveedorIdSeleccionado)
+          .where('numeroComprobante', isEqualTo: numeroTrim)
+          .limit(1)
+          .get();
 
-    batch.set(docFacturaRef, dataFactura);
+      if (duplicadoSnap.docs.isNotEmpty) {
+        if (mounted) {
+          setState(() => _guardando = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Ya existe un comprobante N° $numeroTrim cargado para $_razonSocialProveedor. Revisá antes de volver a cargarlo.',
+              ),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
 
-    // Impacto Transaccional en Cta. Cte. Proveedores
-    final ctaCteRef = _firestore.collection('cta_cte_proveedores').doc();
-    batch.set(ctaCteRef, {
-      'proveedorId': _proveedorIdSeleccionado,
-      'cuitProveedor': _cuitProveedor,
-      'razonSocial': _razonSocialProveedor,
-      'fecha': Timestamp.fromDate(_fechaEmision),
-      'tipoMovimiento': 'COMPRA_FACTURA',
-      'comprobanteId': docFacturaRef.id,
-      'descripcion': 'Factura $_tipoComprobante N° $_numeroComprobante',
-      'montoHaber': _montoTotal,
-      'montoDebe': 0.0,
-    });
+      final String? comprobanteUrl = await _subirComprobante();
 
-    await batch.commit();
-    if (mounted) Navigator.pop(context);
+      final batch = _firestore.batch();
+      final docFacturaRef = _firestore.collection('compras_facturas').doc();
+
+      final List<Map<String, dynamic>> iibbDesglosado =
+          _listaPercepcionesIIBB
+              .where((item) => item.monto > 0)
+              .map(
+                (item) => {
+                  'jurisdiccion': item.jurisdiccion,
+                  'monto': item.monto,
+                },
+              )
+              .toList();
+
+      final dataFactura = {
+        'proveedorId': _proveedorIdSeleccionado,
+        'tipoComprobante': _tipoComprobante,
+        'numeroComprobante': numeroTrim,
+        'cuitProveedor': _cuitProveedor,
+        'razonSocialProveedor': _razonSocialProveedor,
+        'fechaEmision': Timestamp.fromDate(_fechaEmision),
+        'fechaVencimiento': Timestamp.fromDate(_fechaVencimiento),
+        'netoGravado21': _neto21,
+        'netoGravado105': _neto105,
+        'netoGravado27': _neto27,
+        'netoGravadoTotal': _totalNeto,
+        'ivaTotal': _totalIVA,
+        'exento': _exento,
+        'percepcionesIIBBDesglose': iibbDesglosado,
+        'percepcionIIBBTotal': _totalIIBB,
+        'percepcionIVA': _percepcionIVA,
+        'percepcionGanancias': _percepcionGanancias,
+        'percepcionesTotal': _totalPercepciones,
+        'montoTotal': _montoTotal,
+        'saldoPendiente': _montoTotal,
+        'estadoPago': 'PENDIENTE',
+        'comprobanteUrl': comprobanteUrl,
+        'creadoEl': FieldValue.serverTimestamp(),
+      };
+
+      batch.set(docFacturaRef, dataFactura);
+
+      // Impacto Transaccional en Cta. Cte. Proveedores
+      final ctaCteRef = _firestore.collection('cta_cte_proveedores').doc();
+      batch.set(ctaCteRef, {
+        'proveedorId': _proveedorIdSeleccionado,
+        'cuitProveedor': _cuitProveedor,
+        'razonSocial': _razonSocialProveedor,
+        'fecha': Timestamp.fromDate(_fechaEmision),
+        'tipoMovimiento': 'COMPRA_FACTURA',
+        'comprobanteId': docFacturaRef.id,
+        'descripcion': 'Factura $_tipoComprobante N° $numeroTrim',
+        'montoHaber': _montoTotal,
+        'montoDebe': 0.0,
+      });
+
+      await batch.commit();
+      if (mounted) Navigator.pop(context);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _guardando = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error al guardar la factura: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 }

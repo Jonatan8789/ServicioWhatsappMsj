@@ -55,8 +55,8 @@ class _OrdenPagoDialogState extends State<OrdenPagoDialog> {
           ),
         ],
       ),
-      content: SizedBox(
-        width: 600,
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 600),
         child: SingleChildScrollView(
           child: Form(
             key: _formKey,

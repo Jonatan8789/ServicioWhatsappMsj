@@ -18,6 +18,7 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
   // 🏛️ CONTROLES AFIP / ARCA
   final _cuitArcaCtrl = TextEditingController();
   final _ptoVentaArcaCtrl = TextEditingController();
+  final _alicuotaIvaCtrl = TextEditingController(text: '21');
   int _comprobanteTipoArca = 11; // 11 = C, 1 = A, 6 = B
   bool _modoProduccionArca = false;
   bool _cargandoArca = true;
@@ -42,6 +43,7 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
     _tabController.dispose();
     _cuitArcaCtrl.dispose();
     _ptoVentaArcaCtrl.dispose();
+    _alicuotaIvaCtrl.dispose();
     _accessTokenMpCtrl.dispose();
     _publicKeyMpCtrl.dispose();
     super.dispose();
@@ -62,6 +64,8 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
         _ptoVentaArcaCtrl.text = (data['puntoVenta'] ?? '1').toString();
         _comprobanteTipoArca = data['comprobanteTipo'] ?? 11;
         _modoProduccionArca = data['modoProduccion'] ?? false;
+        _alicuotaIvaCtrl.text = (data['alicuotaIvaPorcentaje'] ?? 21)
+            .toString();
       }
     } catch (e) {
       print("Error cargando ARCA: $e");
@@ -80,6 +84,8 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
             'puntoVenta': int.tryParse(_ptoVentaArcaCtrl.text.trim()) ?? 1,
             'comprobanteTipo': _comprobanteTipoArca,
             'modoProduccion': _modoProduccionArca,
+            'alicuotaIvaPorcentaje':
+                double.tryParse(_alicuotaIvaCtrl.text.trim()) ?? 21,
             'ultimaActualizacion': FieldValue.serverTimestamp(),
           });
 
@@ -237,8 +243,8 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Center(
-        child: SizedBox(
-          width: 600,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 600),
           child: Card(
             elevation: 2,
             shape: RoundedRectangleBorder(
@@ -316,6 +322,21 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
                   ),
                   const SizedBox(height: 16),
 
+                  TextField(
+                    controller: _alicuotaIvaCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    decoration: const InputDecoration(
+                      labelText: 'Alícuota de IVA (%)',
+                      helperText:
+                          'Sólo se usa para Factura A/B (Responsable Inscripto). Factura C nunca discrimina IVA.',
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.percent_rounded),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
                   SwitchListTile(
                     title: const Text('Modo Producción'),
                     subtitle: Text(
@@ -383,8 +404,8 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Center(
-        child: SizedBox(
-          width: 600,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 600),
           child: Card(
             elevation: 2,
             shape: RoundedRectangleBorder(

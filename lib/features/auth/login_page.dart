@@ -6,6 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'auth_services.dart';
 import '../dashboard/dashboard_page.dart';
 import '../socios/socio_dashboard_page.dart'; // 👈 Import del Dashboard de Socios
+import '../profesores/profesor_dashboard_page.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -157,6 +158,130 @@ class _LoginPageState extends State<LoginPage> {
     return resultadoExitoso;
   }
 
+  // 🪟 DIÁLOGO MODAL PARA VINCULAR DNI DEL PROFESOR (misma mecánica que la
+  // de arriba, contra el padrón de 'profesores')
+  Future<bool> _solicitarVinculacionDniProfesor(String uid) async {
+    final TextEditingController dniController = TextEditingController();
+    bool vinculando = false;
+    bool resultadoExitoso = false;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            const Color oquaPrimary = Color(0xFF0A3B43);
+
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
+              ),
+              title: const Row(
+                children: [
+                  Icon(Icons.badge_outlined, color: oquaPrimary),
+                  SizedBox(width: 10),
+                  Text('Vinculación de Profesor'),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Ingresa tu DNI para vincular tu cuenta con tu ficha de profesor en el club:',
+                    style: TextStyle(fontSize: 13, color: Colors.black54),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: dniController,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      labelText: 'Número de DNI',
+                      hintText: 'Ej: 38123456',
+                      prefixIcon: const Icon(Icons.pin, color: oquaPrimary),
+                      filled: true,
+                      fillColor: const Color(0xFFF8FAFC),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: vinculando
+                      ? null
+                      : () {
+                          Navigator.pop(dialogContext);
+                        },
+                  child: const Text(
+                    'Cancelar',
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: oquaPrimary,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  onPressed: vinculando
+                      ? null
+                      : () async {
+                          final dni = dniController.text.trim();
+                          if (dni.isEmpty) {
+                            _mostrarMensaje(
+                              'Ingresa un DNI válido.',
+                              Colors.orange,
+                              dialogContext,
+                            );
+                            return;
+                          }
+
+                          setDialogState(() => vinculando = true);
+                          final resp = await AuthService()
+                              .vincularProfesorPorDni(dni);
+
+                          if (!dialogContext.mounted) return;
+
+                          setDialogState(() => vinculando = false);
+
+                          if (resp['exito'] == true) {
+                            resultadoExitoso = true;
+                            Navigator.pop(dialogContext);
+                          } else {
+                            _mostrarMensaje(
+                              resp['mensaje'] ?? 'Error al vincular.',
+                              Colors.redAccent,
+                              dialogContext,
+                            );
+                          }
+                        },
+                  child: vinculando
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            color: Colors.white,
+                            strokeWidth: 2,
+                          ),
+                        )
+                      : const Text('Vincular'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    return resultadoExitoso;
+  }
+
   // 🔄 FLUJO COMPLETO POST-AUTENTICACIÓN RECONOCIENDO EL ROL
   Future<void> _procesarPostLogin(User user, Color colorTema) async {
     String rol = await AuthService().obtenerRolUsuario(user.uid);
@@ -209,6 +334,52 @@ class _LoginPageState extends State<LoginPage> {
             builder: (context) => SocioDashboardPage(
               socioId: docSocio.id,
               socioData: docSocio.data(),
+            ),
+          ),
+        );
+        return;
+      }
+    }
+
+    // 👨‍🏫 SI ES PROFESOR: VERIFICAR VINCULACIÓN Y REDIRIGIR A SU VISTA
+    // DEDICADA. Antes cualquier rol distinto de 'admin' caía en
+    // DashboardPage, que asume socio y manda a un callejón sin salida
+    // ("Ficha pendiente de vinculación") a cualquier profesor.
+    if (rol == 'profe') {
+      bool yaVinculado = await AuthService().estaProfesorVinculado(user.uid);
+
+      if (!yaVinculado) {
+        setState(() => _cargando = false);
+        bool vinculadoOk = await _solicitarVinculacionDniProfesor(user.uid);
+
+        if (!vinculadoOk) {
+          await AuthService().cerrarSesion();
+          _mostrarMensaje(
+            'Debes estar registrado en el padrón de profesores para ingresar.',
+            Colors.orange,
+          );
+          return;
+        }
+      }
+
+      final snapProfesor = await FirebaseFirestore.instance
+          .collection('profesores')
+          .where('usuarioUid', isEqualTo: user.uid)
+          .limit(1)
+          .get();
+
+      setState(() => _cargando = false);
+      _mostrarMensaje('¡Bienvenido/a a tu portal de profesor!', colorTema);
+
+      if (mounted && snapProfesor.docs.isNotEmpty) {
+        final docProfesor = snapProfesor.docs.first;
+
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (context) => ProfesorDashboardPage(
+              profesorId: docProfesor.id,
+              profesorData: docProfesor.data(),
             ),
           ),
         );

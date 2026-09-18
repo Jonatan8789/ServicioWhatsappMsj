@@ -24,15 +24,20 @@ class SocioModel {
   // 🏷️ CONTROL DE MATRÍCULA Y LÍNEA TEMPORAL DE PAGOS
   final bool matriculaAlDia;
   final DateTime? fechaPagoMatricula;
-  final String ultimoMesPago; // Ej: "2026-07" o "Agosto 2026"
-  final String? mesesCubiertosHasta; // 👈 NUEVO: "2026-11" para promociones
-  final String huellaHash; // 👈 NUEVO: Hash biométrico
+  final String ultimoMesPago;
+  final String? mesesCubiertosHasta;
+  final String huellaHash;
+  final List<String>
+  huellasHashes; // 👈 HUELLAS MÚLTIPLES (SOCIO / PAPÁ / MAMÁ)
 
   // 🏫 CONVENIO / ARANCEL ESCOLAR
   final bool esEstudianteEscuela;
   final String? colegioInstitucion;
   final String? gradoAnio;
   final double descuentoEscolarPorcentaje;
+
+  // 👨‍👩‍👧‍👦 GRUPO FAMILIAR (descuento por vínculo con otros socios)
+  final String? grupoFamiliarId;
 
   SocioModel({
     required this.id,
@@ -57,10 +62,12 @@ class SocioModel {
     this.ultimoMesPago = 'Sin Registros',
     this.mesesCubiertosHasta,
     this.huellaHash = '',
+    this.huellasHashes = const [],
     this.esEstudianteEscuela = false,
     this.colegioInstitucion,
     this.gradoAnio,
     this.descuentoEscolarPorcentaje = 0.0,
+    this.grupoFamiliarId,
   });
 
   factory SocioModel.fromFirestore(DocumentSnapshot doc) {
@@ -92,18 +99,18 @@ class SocioModel {
       idBloqueHorario: data['idBloqueHorario']?.toString() ?? '',
       saldoCuentaCorriente:
           (data['saldoCuentaCorriente'] as num?)?.toDouble() ?? 0.0,
-
       matriculaAlDia: data['matriculaAlDia'] == true,
       fechaPagoMatricula: parseFecha(data['fechaPagoMatricula']),
       ultimoMesPago: data['ultimoMesPago']?.toString() ?? 'Sin Registros',
       mesesCubiertosHasta: data['mesesCubiertosHasta']?.toString(),
       huellaHash: data['huellaHash']?.toString() ?? '',
-
+      huellasHashes: List<String>.from(data['huellasHashes'] ?? []),
       esEstudianteEscuela: data['esEstudianteEscuela'] == true,
       colegioInstitucion: data['colegioInstitucion']?.toString(),
       gradoAnio: data['gradoAnio']?.toString(),
       descuentoEscolarPorcentaje:
           (data['descuentoEscolarPorcentaje'] as num?)?.toDouble() ?? 0.0,
+      grupoFamiliarId: data['grupoFamiliarId']?.toString(),
     );
   }
 
@@ -136,10 +143,12 @@ class SocioModel {
       'ultimoMesPago': ultimoMesPago,
       'mesesCubiertosHasta': mesesCubiertosHasta,
       'huellaHash': huellaHash,
+      'huellasHashes': huellasHashes,
       'esEstudianteEscuela': esEstudianteEscuela,
       'colegioInstitucion': colegioInstitucion,
       'gradoAnio': gradoAnio,
       'descuentoEscolarPorcentaje': descuentoEscolarPorcentaje,
+      'grupoFamiliarId': grupoFamiliarId,
     };
   }
 }

@@ -221,12 +221,12 @@ Agradecemos tu compromiso para mantener tu cuenta al día.
 
     try {
       await http.post(
-        Uri.parse('http://localhost:3000/send-whatsapp'),
+        Uri.parse('https://servicio-whatsapp-oqua.onrender.com/send-whatsapp'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'phone': telefono, 'message': mensaje}),
       );
     } catch (e) {
-      print('Error al enviar WhatsApp: $e');
+      debugPrint('Error al enviar WhatsApp: $e');
     }
   }
 
@@ -234,8 +234,9 @@ Agradecemos tu compromiso para mantener tu cuenta al día.
   Widget build(BuildContext context) {
     return Dialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Container(
-        width: 700,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 700),
+        child: Container(
         padding: const EdgeInsets.all(24),
         child: _cargando
             ? const SizedBox(
@@ -479,6 +480,7 @@ Agradecemos tu compromiso para mantener tu cuenta al día.
                   ),
                 ],
               ),
+        ),
       ),
     );
   }

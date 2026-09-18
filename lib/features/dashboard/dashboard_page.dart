@@ -30,8 +30,14 @@ import '../buffet/monitor_cocina_page.dart';
 import '../buffet/menu_buffet_page.dart';
 import 'package:natatorio_app/features/paddle/crear_torneo_page.dart';
 import 'package:natatorio_app/features/paddle/detalle_torneo_page.dart';
-
 import '../socios/socio_dashboard_page.dart';
+import '../profesores/liquidacion_profesores_page.dart';
+import '../../theme/app_theme.dart';
+import '../inventario/explorador_movimientos_stock_page.dart';
+import '../asistencias/explorador_asistencias_page.dart';
+
+// 🎾 NUEVA IMPORTACIÓN DEL EXPLORADOR DE RESERVAS
+import 'package:natatorio_app/features/paddle/explorador_reservas_page.dart';
 
 class DashboardPage extends StatefulWidget {
   final String rolUsuario;
@@ -45,8 +51,13 @@ class DashboardPage extends StatefulWidget {
 class _DashboardPageState extends State<DashboardPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final User? _userActual = FirebaseAuth.instance.currentUser;
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   late Widget _pantallaActual;
   String _filtroMenu = "";
+
+  // 📱 Debajo de este ancho el panel lateral fijo de 264px no entra en un
+  // celular: se reemplaza por un Drawer que se abre con el ícono hamburguesa.
+  static const double _anchoBreakpointMovil = 900;
 
   @override
   void initState() {
@@ -101,10 +112,8 @@ class _DashboardPageState extends State<DashboardPage> {
             ),
             const SizedBox(height: 30),
 
-            // 📊 FILA DE TARJETAS MÉTRICAS CLAVE EN TIEMPO REAL
             Row(
               children: [
-                // 1. Total Socios Registrados
                 StreamBuilder<QuerySnapshot>(
                   stream: _firestore.collection('socios').snapshots(),
                   builder: (context, snapshot) {
@@ -122,7 +131,6 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
                 const SizedBox(width: 16),
 
-                // 2. Socios con Cuota al Día
                 StreamBuilder<QuerySnapshot>(
                   stream: _firestore.collection('socios').snapshots(),
                   builder: (context, snapshot) {
@@ -152,7 +160,6 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
                 const SizedBox(width: 16),
 
-                // 3. Nivel de Presentismo Diario (Accesos registrados hoy)
                 StreamBuilder<QuerySnapshot>(
                   stream: _firestore
                       .collection('asistencias_accesos')
@@ -183,7 +190,6 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
                 const SizedBox(width: 16),
 
-                // 4. Ocupación Canchas Hoy
                 StreamBuilder<QuerySnapshot>(
                   stream: _firestore.collection('reservas_canchas').snapshots(),
                   builder: (context, snapshot) {
@@ -209,9 +215,20 @@ class _DashboardPageState extends State<DashboardPage> {
 
                 if (widget.rolUsuario == 'admin') ...[
                   const SizedBox(width: 16),
-                  // 5. Caja Buffet / Recaudación
                   StreamBuilder<QuerySnapshot>(
-                    stream: _firestore.collection('ventas_buffet').snapshots(),
+                    // 🚨 No tenía filtro de fecha: sumaba TODA la historia de
+                    // ventas, no el total de hoy que el título sugiere.
+                    stream: _firestore
+                        .collection('ventas_buffet')
+                        .where(
+                          'fecha',
+                          isGreaterThanOrEqualTo: DateTime(
+                            DateTime.now().year,
+                            DateTime.now().month,
+                            DateTime.now().day,
+                          ),
+                        )
+                        .snapshots(),
                     builder: (context, snapshot) {
                       double totalDiario = 0.0;
                       if (snapshot.hasData) {
@@ -222,7 +239,7 @@ class _DashboardPageState extends State<DashboardPage> {
                         }
                       }
                       return _buildMetricCard(
-                        'Caja Buffet Total',
+                        'Caja Buffet Hoy',
                         '\$${totalDiario.toStringAsFixed(0)}',
                         Icons.account_balance_wallet_rounded,
                         Colors.teal.shade700,
@@ -601,7 +618,7 @@ class _DashboardPageState extends State<DashboardPage> {
                                 size: 18,
                               ),
                               label: const Text(
-                                'Abrir Punto de Venta (POS)',
+                                'Abrir Punto de Venta (Caja)',
                                 style: TextStyle(fontWeight: FontWeight.bold),
                               ),
                             ),
@@ -931,72 +948,128 @@ class _DashboardPageState extends State<DashboardPage> {
       );
     }
 
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
-      body: Row(
-        children: [
-          Container(
-            width: 260,
-            color: const Color(0xFF1E293B),
-            child: Column(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final bool esMovil = constraints.maxWidth < _anchoBreakpointMovil;
+
+        if (esMovil) {
+          return Scaffold(
+            key: _scaffoldKey,
+            backgroundColor: AppColors.background,
+            appBar: AppBar(
+              backgroundColor: AppColors.navy,
+              foregroundColor: Colors.white,
+              title: const Text('OQUA CLUB'),
+            ),
+            drawer: Drawer(
+              backgroundColor: AppColors.navy,
+              child: SafeArea(child: _buildNavColumn()),
+            ),
+            body: _pantallaActual,
+          );
+        }
+
+        return Scaffold(
+          key: _scaffoldKey,
+          backgroundColor: AppColors.background,
+          body: Row(
+            children: [
+              Container(
+                width: 264,
+                color: AppColors.navy,
+                child: _buildNavColumn(),
+              ),
+              Expanded(child: _pantallaActual),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // 🧭 Contenido del panel lateral (marca, buscador, menú, cerrar sesión) —
+  // se reutiliza tanto en el Container fijo de escritorio como dentro del
+  // Drawer en celular, para no mantener dos copias del menú.
+  Widget _buildNavColumn() {
+    return Column(
               children: [
-                const SizedBox(height: 40),
-                ListTile(
-                  leading: const Icon(
-                    Icons.pool,
-                    color: Colors.cyanAccent,
-                    size: 32,
-                  ),
-                  title: const Text(
-                    'OQUA CLUB DEPORTIVO',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 18,
-                    ),
-                  ),
-                  subtitle: Text(
-                    'Rol: ${widget.rolUsuario.toUpperCase()}',
-                    style: const TextStyle(
-                      color: Colors.cyanAccent,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                    ),
+                const SizedBox(height: 28),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(9),
+                        decoration: BoxDecoration(
+                          color: AppColors.teal.withValues(alpha: 0.18),
+                          borderRadius: BorderRadius.circular(AppRadius.sm),
+                        ),
+                        child: const Icon(
+                          Icons.pool_rounded,
+                          color: AppColors.tealLight,
+                          size: 22,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'OQUA CLUB',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w800,
+                                fontSize: 16,
+                                letterSpacing: 0.2,
+                              ),
+                            ),
+                            Text(
+                              widget.rolUsuario.toUpperCase(),
+                              style: const TextStyle(
+                                color: AppColors.tealLight,
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 0.6,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                const Divider(color: Colors.blueAccent),
+                const SizedBox(height: 20),
+                const Divider(color: Color(0xFF1E293B), height: 1),
 
-                // 🔍 BUSCADOR EN EL MENÚ LATERAL
                 Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12.0,
-                    vertical: 8.0,
-                  ),
+                  padding: const EdgeInsets.fromLTRB(14, 14, 14, 4),
                   child: TextField(
                     style: const TextStyle(color: Colors.white, fontSize: 13),
                     decoration: InputDecoration(
                       hintText: 'Filtrar menú...',
                       hintStyle: const TextStyle(
-                        color: Colors.blueGrey,
+                        color: Color(0xFF64748B),
                         fontSize: 13,
                       ),
                       prefixIcon: const Icon(
-                        Icons.search,
-                        color: Colors.blueGrey,
+                        Icons.search_rounded,
+                        color: Color(0xFF64748B),
                         size: 18,
                       ),
                       filled: true,
-                      fillColor: const Color(0xFF0F172A),
+                      fillColor: Colors.white.withValues(alpha: 0.06),
                       isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(vertical: 12),
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: BorderRadius.circular(AppRadius.sm),
                         borderSide: BorderSide.none,
                       ),
                     ),
                     onChanged: (val) => setState(() => _filtroMenu = val),
                   ),
                 ),
-                const SizedBox(height: 10),
+                const SizedBox(height: 6),
 
                 Expanded(
                   child: SingleChildScrollView(
@@ -1010,6 +1083,7 @@ class _DashboardPageState extends State<DashboardPage> {
                               () => _pantallaActual = _construirPanelInicio(),
                             ),
                           ),
+                        _buildMenuSectionLabel('Socios & Acceso'),
                         if (_coincideFiltro('Control Acceso'))
                           _buildMenuItem(
                             Icons.fingerprint_rounded,
@@ -1036,12 +1110,23 @@ class _DashboardPageState extends State<DashboardPage> {
                               ),
                             ),
                           ),
+                        _buildMenuSectionLabel('Pádel'),
                         if (_coincideFiltro('Canchas & Turnos'))
                           _buildMenuItem(
                             Icons.sports_tennis_rounded,
                             'Canchas & Turnos',
                             onTap: () => setState(
                               () => _pantallaActual = const CanchasPage(),
+                            ),
+                          ),
+                        if (_coincideFiltro('Explorador Reservas') ||
+                            _coincideFiltro('Comprobantes'))
+                          _buildMenuItem(
+                            Icons.travel_explore_rounded,
+                            'Explorador Reservas',
+                            onTap: () => setState(
+                              () => _pantallaActual =
+                                  const ExploradorReservasPage(),
                             ),
                           ),
                         if (_coincideFiltro('Torneos de Pádel'))
@@ -1052,6 +1137,7 @@ class _DashboardPageState extends State<DashboardPage> {
                               () => _pantallaActual = _construirVistaTorneos(),
                             ),
                           ),
+                        _buildMenuSectionLabel('Buffet & Ventas'),
                         if (_coincideFiltro('Inventario Central'))
                           _buildMenuItem(
                             Icons.inventory_2_rounded,
@@ -1064,7 +1150,7 @@ class _DashboardPageState extends State<DashboardPage> {
                         if (_coincideFiltro('Punto de Venta'))
                           _buildMenuItem(
                             Icons.point_of_sale_rounded,
-                            'Punto de Venta',
+                            'Punto de Venta (Caja)',
                             onTap: () => setState(
                               () => _pantallaActual = const PosCajaPage(),
                             ),
@@ -1103,6 +1189,16 @@ class _DashboardPageState extends State<DashboardPage> {
                               () => _pantallaActual = const MonitorCocinaPage(),
                             ),
                           ),
+                        if (_coincideFiltro('Movimientos de Stock'))
+                          _buildMenuItem(
+                            Icons.swap_vert_rounded,
+                            'Movimientos de Stock',
+                            onTap: () => setState(
+                              () => _pantallaActual =
+                                  const ExploradorMovimientosStockPage(),
+                            ),
+                          ),
+                        _buildMenuSectionLabel('Profesores'),
                         if (_coincideFiltro('Staff Profesores'))
                           _buildMenuItem(
                             Icons.badge_rounded,
@@ -1121,6 +1217,15 @@ class _DashboardPageState extends State<DashboardPage> {
                               () => _pantallaActual = const NominaDiariaPage(),
                             ),
                           ),
+                        if (_coincideFiltro('Explorador Asistencias'))
+                          _buildMenuItem(
+                            Icons.history_rounded,
+                            'Explorador Asistencias',
+                            onTap: () => setState(
+                              () => _pantallaActual =
+                                  const ExploradorAsistenciasPage(),
+                            ),
+                          ),
                         if (_coincideFiltro('Asignar Cronogramas'))
                           _buildMenuItem(
                             Icons.edit_calendar_rounded,
@@ -1131,6 +1236,18 @@ class _DashboardPageState extends State<DashboardPage> {
                           ),
 
                         if (widget.rolUsuario == 'admin') ...[
+                          _buildMenuSectionLabel('Administración'),
+                          if (_coincideFiltro('Liquidación Profesores') ||
+                              _coincideFiltro('Liquidacion Profesores') ||
+                              _coincideFiltro('Honorarios'))
+                            _buildMenuItem(
+                              Icons.calculate_rounded,
+                              'Liquidación Profesores',
+                              onTap: () => setState(
+                                () => _pantallaActual =
+                                    const LiquidacionesProfesoresPage(),
+                              ),
+                            ),
                           if (_coincideFiltro('Tesorería'))
                             _buildMenuItem(
                               Icons.monetization_on_rounded,
@@ -1242,17 +1359,18 @@ class _DashboardPageState extends State<DashboardPage> {
                   ),
                 ),
 
-                const Divider(color: Colors.blueAccent),
+                const Divider(color: Color(0xFF1E293B), height: 1),
                 ListTile(
-                  leading: const Icon(
+                  leading: Icon(
                     Icons.logout_rounded,
-                    color: Colors.redAccent,
+                    color: Colors.red.shade300,
                   ),
-                  title: const Text(
+                  title: Text(
                     'Cerrar Sesión',
                     style: TextStyle(
-                      color: Colors.redAccent,
-                      fontWeight: FontWeight.bold,
+                      color: Colors.red.shade300,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13.5,
                     ),
                   ),
                   onTap: () async {
@@ -1268,13 +1386,7 @@ class _DashboardPageState extends State<DashboardPage> {
                   },
                 ),
                 const SizedBox(height: 12),
-              ],
-            ),
-          ),
-
-          Expanded(child: _pantallaActual),
-        ],
-      ),
+      ],
     );
   }
 
@@ -1283,77 +1395,82 @@ class _DashboardPageState extends State<DashboardPage> {
     String title, {
     required VoidCallback onTap,
   }) {
-    return Material(
-      color: Colors.transparent,
-      child: ListTile(
-        leading: Icon(icon, color: Colors.blueGrey),
-        title: Text(
-          title,
-          style: const TextStyle(color: Colors.blueGrey, fontSize: 14),
-        ),
-        onTap: onTap,
-      ),
-    );
-  }
-
-  Widget _buildMetricCard(
-    String title,
-    String value,
-    IconData icon,
-    Color color,
-    Color backgroundColor,
-  ) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: backgroundColor,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: color.withValues(alpha: 0.3), width: 1.5),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          // 📱 En celular el menú vive dentro de un Drawer: además de
+          // cambiar de pantalla, hay que cerrarlo (no-op si no hay Drawer
+          // abierto, como en escritorio).
+          onTap: () {
+            onTap();
+            _scaffoldKey.currentState?.closeDrawer();
+          },
+          hoverColor: Colors.white.withValues(alpha: 0.06),
+          splashColor: AppColors.teal.withValues(alpha: 0.25),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 11,
+            ),
+            child: Row(
               children: [
-                Text(
-                  title,
-                  style: TextStyle(
-                    color: color.withValues(alpha: 0.8),
-                    fontWeight: FontWeight.bold,
-                    fontSize: 12,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  value,
-                  style: const TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.w900,
-                    color: Color(0xFF0F172A),
+                Icon(icon, color: const Color(0xFF94A3B8), size: 19),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                      color: Color(0xFFCBD5E1),
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],
             ),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: color.withValues(alpha: 0.1),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: Icon(icon, size: 24, color: color),
-            ),
-          ],
+          ),
         ),
       ),
+    );
+  }
+
+  // 📌 Encabezado de sección en el menú lateral (agrupa ítems relacionados
+  // para que 25+ links no queden como una sola lista plana sin jerarquía).
+  Widget _buildMenuSectionLabel(String label) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(22, 16, 12, 6),
+      child: Text(
+        label.toUpperCase(),
+        style: const TextStyle(
+          color: Color(0xFF64748B),
+          fontSize: 10.5,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.8,
+        ),
+      ),
+    );
+  }
+
+  // 🎨 Rediseño visual: antes cada card tenía su propio fondo pastel
+  // (azul/verde/violeta/naranja) sin relación entre sí — un mosaico de
+  // colores random en vez de una jerarquía visual. Ahora todas comparten la
+  // misma superficie blanca + borde sutil de AppColors.line, y el color
+  // "temático" queda sólo en el chip del ícono — más cohesivo, y consistente
+  // con el resto del rediseño (POS, Control de Acceso).
+  Widget _buildMetricCard(
+    String title,
+    String value,
+    IconData icon,
+    Color color, [
+    Color? backgroundColorIgnorado,
+  ]) {
+    return Expanded(
+      child: MetricCard(label: title, value: value, icon: icon, accent: color),
     );
   }
 }

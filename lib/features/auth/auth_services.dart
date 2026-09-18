@@ -205,6 +205,30 @@ class AuthService {
     }
   }
 
+  Future<bool> estaProfesorVinculado(String uid) async {
+    try {
+      DocumentSnapshot docUser = await FirebaseFirestore.instance
+          .collection('usuarios')
+          .doc(uid)
+          .get();
+      if (docUser.exists) {
+        final data = docUser.data() as Map<String, dynamic>?;
+        if (data != null && data['profesorId'] != null) return true;
+      }
+
+      QuerySnapshot queryProfesor = await FirebaseFirestore.instance
+          .collection('profesores')
+          .where('usuarioUid', isEqualTo: uid)
+          .limit(1)
+          .get();
+
+      return queryProfesor.docs.isNotEmpty;
+    } catch (e) {
+      print("🚨 Error al consultar vinculación de profesor: $e");
+      return false;
+    }
+  }
+
   Future<Map<String, dynamic>> vincularSocioPorDni(String dni) async {
     try {
       final User? userActual = _auth.currentUser;
@@ -271,6 +295,80 @@ class AuthService {
         'exito': true,
         'mensaje': '¡Cuenta vinculada con éxito!',
         'socioId': docSocio.id,
+      };
+    } catch (e) {
+      return {'exito': false, 'mensaje': 'Error técnico: ${e.toString()}'};
+    }
+  }
+
+  // 👨‍🏫 VINCULACIÓN DE CUENTA DE PROFESOR POR DNI (misma mecánica que
+  // vincularSocioPorDni, pero contra el padrón de 'profesores').
+  Future<Map<String, dynamic>> vincularProfesorPorDni(String dni) async {
+    try {
+      final User? userActual = _auth.currentUser;
+      if (userActual == null) {
+        return {'exito': false, 'mensaje': 'No hay usuario autenticado.'};
+      }
+
+      final String dniLimpioStr = dni.trim().replaceAll('.', '');
+      final int? dniLimpioNum = int.tryParse(dniLimpioStr);
+
+      QuerySnapshot queryProfesor = await FirebaseFirestore.instance
+          .collection('profesores')
+          .where('dni', isEqualTo: dniLimpioStr)
+          .limit(1)
+          .get();
+
+      if (queryProfesor.docs.isEmpty && dniLimpioNum != null) {
+        queryProfesor = await FirebaseFirestore.instance
+            .collection('profesores')
+            .where('dni', isEqualTo: dniLimpioNum)
+            .limit(1)
+            .get();
+      }
+
+      if (queryProfesor.docs.isEmpty) {
+        return {
+          'exito': false,
+          'mensaje':
+              'No se encontró un profesor con el DNI $dniLimpioStr en el padrón.',
+        };
+      }
+
+      final docProfesor = queryProfesor.docs.first;
+      final datosProfesor = docProfesor.data() as Map<String, dynamic>;
+
+      if (datosProfesor['usuarioUid'] != null &&
+          datosProfesor['usuarioUid'] != userActual.uid) {
+        return {
+          'exito': false,
+          'mensaje': 'Este DNI ya está vinculado a otra cuenta.',
+        };
+      }
+
+      await FirebaseFirestore.instance
+          .collection('profesores')
+          .doc(docProfesor.id)
+          .update({
+            'usuarioUid': userActual.uid,
+            'emailVinculado': userActual.email,
+            'fechaVinculacion': FieldValue.serverTimestamp(),
+          });
+
+      await FirebaseFirestore.instance
+          .collection('usuarios')
+          .doc(userActual.uid)
+          .set({
+            'uid': userActual.uid,
+            'email': userActual.email,
+            'profesorId': docProfesor.id,
+            'esProfesor': true,
+          }, SetOptions(merge: true));
+
+      return {
+        'exito': true,
+        'mensaje': '¡Cuenta vinculada con éxito!',
+        'profesorId': docProfesor.id,
       };
     } catch (e) {
       return {'exito': false, 'mensaje': 'Error técnico: ${e.toString()}'};

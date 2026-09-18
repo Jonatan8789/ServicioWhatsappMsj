@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../../services/cobro_manual_adelantado_dialog.dart';
 
 class CuentaCorrienteSocioPage extends StatefulWidget {
   final String socioId;
@@ -97,6 +98,7 @@ class _CuentaCorrienteSocioPageState extends State<CuentaCorrienteSocioPage> {
                 // 🚨 LEE EL CAMPO EXACTO
                 final double saldo = (socioData['saldoCuentaCorriente'] ?? 0.0)
                     .toDouble();
+                final String dniSocio = (socioData['dni'] ?? '').toString();
 
                 // 🚨 AHORA NEGATIVO ES DEUDA, POSITIVO ES A FAVOR
                 final bool tieneDeuda = saldo < 0;
@@ -158,21 +160,51 @@ class _CuentaCorrienteSocioPageState extends State<CuentaCorrienteSocioPage> {
                           ),
                         ],
                       ),
-                      Text(
-                        tieneDeuda
-                            ? '\$${saldo.abs().toStringAsFixed(0)}'
-                            : (saldoAFavor
-                                  ? '+\$${saldo.abs().toStringAsFixed(0)}'
-                                  : '\$0'),
-                        style: TextStyle(
-                          fontSize: 32,
-                          fontWeight: FontWeight.bold,
-                          color: tieneDeuda
-                              ? Colors.red.shade700
-                              : (saldoAFavor
-                                    ? Colors.blue.shade700
-                                    : Colors.green.shade700),
-                        ),
+                      Row(
+                        children: [
+                          Text(
+                            tieneDeuda
+                                ? '\$${saldo.abs().toStringAsFixed(0)}'
+                                : (saldoAFavor
+                                      ? '+\$${saldo.abs().toStringAsFixed(0)}'
+                                      : '\$0'),
+                            style: TextStyle(
+                              fontSize: 32,
+                              fontWeight: FontWeight.bold,
+                              color: tieneDeuda
+                                  ? Colors.red.shade700
+                                  : (saldoAFavor
+                                        ? Colors.blue.shade700
+                                        : Colors.green.shade700),
+                            ),
+                          ),
+                          const SizedBox(width: 20),
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF0F172A),
+                              foregroundColor: Colors.white,
+                            ),
+                            icon: const Icon(
+                              Icons.point_of_sale_rounded,
+                              size: 18,
+                            ),
+                            label: const Text('Registrar Cobro'),
+                            onPressed: () async {
+                              final registrado = await showDialog<bool>(
+                                context: context,
+                                builder: (ctx) => CobroManualAdelantadoDialog(
+                                  socioId: widget.socioId,
+                                  nombreSocio: widget.nombreSocio,
+                                  dniSocio: dniSocio,
+                                  montoSugerido: saldo < 0 ? saldo.abs() : 0.0,
+                                ),
+                              );
+                              if (registrado == true && mounted) {
+                                setState(() {});
+                              }
+                            },
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -277,7 +309,7 @@ class _CuentaCorrienteSocioPageState extends State<CuentaCorrienteSocioPage> {
                   stream: _firestore
                       .collection('socios')
                       .doc(widget.socioId)
-                      .collection('movimientos')
+                      .collection('cuenta_corriente')
                       .orderBy('fecha', descending: true)
                       .snapshots(),
                   builder: (context, snapshot) {
@@ -294,7 +326,10 @@ class _CuentaCorrienteSocioPageState extends State<CuentaCorrienteSocioPage> {
                       final data = doc.data() as Map<String, dynamic>;
                       final tipo = data['tipo']?.toString() ?? '';
                       final concepto =
-                          data['concepto']?.toString().toLowerCase() ?? '';
+                          (data['concepto'] ?? data['detalle'])
+                              ?.toString()
+                              .toLowerCase() ??
+                          '';
                       final Timestamp? timestamp = data['fecha'] as Timestamp?;
                       final fechaMov = timestamp?.toDate() ?? DateTime.now();
 
@@ -325,14 +360,29 @@ class _CuentaCorrienteSocioPageState extends State<CuentaCorrienteSocioPage> {
                         final data =
                             docsFiltrados[index].data() as Map<String, dynamic>;
                         final String tipo = data['tipo'] ?? 'Movimiento';
+                        // 🚨 Los escritores reales usan 'monto' (pos_caja_page,
+                        // liquidacion_cuotas_service, plan_pago_dialog, etc.),
+                        // no 'importe'.
                         final double importe =
-                            (data['importe'] as num?)?.toDouble() ?? 0.0;
-                        final String concepto = data['concepto'] ?? '';
+                            (data['monto'] as num?)?.toDouble() ?? 0.0;
+                        // 🚨 Idem: la descripción se guarda como 'detalle' en
+                        // algunos flujos y 'concepto' en otros.
+                        final String concepto =
+                            (data['concepto'] ?? data['detalle'] ?? '')
+                                .toString();
                         final Timestamp? t = data['fecha'] as Timestamp?;
                         final fecha = t?.toDate() ?? DateTime.now();
+                        final String estado = data['estado']?.toString() ?? '';
 
-                        // Condición visual para pintar la deuda
-                        final esDeuda = importe < 0 || tipo == 'Cargo / Deuda';
+                        // 🚨 Condición visual para pintar la deuda: además del
+                        // monto negativo (pos_caja_page.dart,
+                        // explorador_reservas_page.dart), liquidacion_cuotas_service.dart
+                        // registra la cuota mensual con monto POSITIVO y
+                        // 'estado': 'Pendiente' — sin este OR, esas cuotas se
+                        // veían como un crédito (verde) en vez de una deuda.
+                        final esDeuda = importe < 0 ||
+                            tipo == 'Cargo / Deuda' ||
+                            estado == 'Pendiente';
 
                         return ListTile(
                           leading: CircleAvatar(

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
+import '../paddle/reserva_cancha_model.dart';
 
 class SocioReservaPaddlePage extends StatefulWidget {
   final String socioId;
@@ -41,25 +42,61 @@ class _SocioReservaPaddlePageState extends State<SocioReservaPaddlePage> {
 
     final fechaIdStr =
         "${_fechaSeleccionada.year}-${_fechaSeleccionada.month}-${_fechaSeleccionada.day}";
+    // 🚨 Antes este ID terminaba en "_socioApp", distinto del esquema que
+    // usan canchas_page.dart / reserva_cancha_screen.dart
+    // ("..._duracion{n}h"), así que una reserva hecha acá y otra hecha por
+    // el staff para el mismo horario nunca colisionaban entre sí — dos
+    // reservas "válidas" para la misma cancha/hora. Ahora se usa el mismo
+    // esquema de ID y, además, se repite la misma verificación de
+    // solapamiento que hacen esas pantallas antes de guardar.
+    final String canchaLimpia = _canchaSeleccionada!.replaceAll(' ', '');
     final reservaId =
-        "${fechaIdStr}_${_canchaSeleccionada!.replaceAll(' ', '')}_${_horaInicioSeleccionada}hs_socioApp";
+        "${fechaIdStr}_${canchaLimpia}_${_horaInicioSeleccionada}hs_duracion1h";
 
     try {
-      await _firestore.collection('reservas_canchas').doc(reservaId).set({
-        'id': reservaId,
-        'cancha': _canchaSeleccionada,
-        'nombreCliente': widget.socioNombre,
-        'socioId': widget.socioId,
-        'fecha': Timestamp.fromDate(_fechaSeleccionada),
-        'horaInicio': _horaInicioSeleccionada,
-        'duracionHoras': 1,
-        'precio':
+      final snapshotCanchas = await _firestore
+          .collection('reservas_canchas')
+          .get();
+      for (var doc in snapshotCanchas.docs) {
+        final r = ReservaCanchaModel.fromFirestore(doc.id, doc.data());
+        final String fId = "${r.fecha.year}-${r.fecha.month}-${r.fecha.day}";
+        if (fId == fechaIdStr &&
+            r.cancha == _canchaSeleccionada &&
+            _horaInicioSeleccionada! >= r.horaInicio &&
+            _horaInicioSeleccionada! < r.horaInicio + r.duracionHoras) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                  'Ese horario ya fue reservado. Elegí otro turno.',
+                ),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
+          return;
+        }
+      }
+
+      final nuevaReserva = ReservaCanchaModel(
+        id: reservaId,
+        cancha: _canchaSeleccionada!,
+        nombreCliente: widget.socioNombre,
+        socioId: widget.socioId,
+        fecha: _fechaSeleccionada,
+        horaInicio: _horaInicioSeleccionada!,
+        duracionHoras: 1,
+        precio:
             _precioBase +
             (_alquilaPaleta ? 1500 : 0) +
             (_alquilaPelotas ? 1000 : 0),
-        'metodoPago': 'Cuenta Corriente',
-        'origen': 'Portal Socio',
-      });
+        metodoPago: 'Cuenta Corriente',
+      );
+
+      await _firestore
+          .collection('reservas_canchas')
+          .doc(reservaId)
+          .set({...nuevaReserva.toFirestore(), 'origen': 'Portal Socio'});
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

@@ -10,6 +10,13 @@ class ReservaCanchaModel {
   final int duracionHoras;
   final double precio;
   final String metodoPago;
+  final String estadoReserva;
+  // 🚨 Antes el modelo no incluía estos dos campos en el round-trip: se
+  // guardaban bien en Firestore (canchas_page.dart) pero cualquier código
+  // que pasara por fromFirestore()/toFirestore() los perdía, así que la UI
+  // de seña nunca los veía.
+  final double senaAbonada;
+  final String detalleSena;
 
   ReservaCanchaModel({
     required this.id,
@@ -21,6 +28,9 @@ class ReservaCanchaModel {
     required this.duracionHoras,
     required this.precio,
     required this.metodoPago,
+    this.estadoReserva = 'Confirmada',
+    this.senaAbonada = 0.0,
+    this.detalleSena = '',
   });
 
   Map<String, dynamic> toFirestore() {
@@ -33,6 +43,9 @@ class ReservaCanchaModel {
       'duracionHoras': duracionHoras,
       'precio': precio,
       'metodoPago': metodoPago,
+      'estadoReserva': estadoReserva,
+      'seña_abonada': senaAbonada,
+      'detalle_seña': detalleSena,
     };
   }
 
@@ -50,6 +63,9 @@ class ReservaCanchaModel {
       duracionHoras: (data['duracionHoras'] as num?)?.toInt() ?? 0,
       precio: (data['precio'] as num?)?.toDouble() ?? 0.0,
       metodoPago: data['metodoPago']?.toString() ?? 'Efectivo',
+      estadoReserva: data['estadoReserva']?.toString() ?? 'Confirmada',
+      senaAbonada: (data['seña_abonada'] as num?)?.toDouble() ?? 0.0,
+      detalleSena: data['detalle_seña']?.toString() ?? '',
     );
   }
 }

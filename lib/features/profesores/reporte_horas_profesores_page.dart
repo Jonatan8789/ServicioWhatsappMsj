@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import '../profesores/profesor_model.dart';
 import '../asistencias/asistencia_model.dart';
+import '../../services/registro_horas_profesores_service.dart';
 
 class ReporteHorasProfesoresPage extends StatefulWidget {
   const ReporteHorasProfesoresPage({super.key});
@@ -54,6 +55,74 @@ class _ReporteHorasProfesoresPageState
     if (salida == null) return 0.0;
     final diferencia = salida.fecha.difference(entrada.fecha);
     return diferencia.inMinutes / 60.0;
+  }
+
+  // 💰 GENERA (O COMPLETA) 'registro_horas_profes' PARA EL RANGO VISIBLE, PARA
+  // QUE LA LIQUIDACIÓN DE PROFESORES PUEDA FACTURAR ASISTENCIA YA CARGADA
+  // ANTES DE QUE ESTE PUENTE EXISTIERA. Idempotente: las sesiones ya
+  // generadas (pagadas o no) se omiten, nunca se reescriben.
+  Future<void> _generarLiquidacionHistorica() async {
+    final DateTime inicioFiltro = DateTime(
+      _fechaDesde.year,
+      _fechaDesde.month,
+      _fechaDesde.day,
+    );
+    final DateTime finFiltro = DateTime(
+      _fechaHasta.year,
+      _fechaHasta.month,
+      _fechaHasta.day,
+      23,
+      59,
+      59,
+    );
+
+    final snap = await _firestore
+        .collection('asistencia')
+        .where('fecha', isGreaterThanOrEqualTo: inicioFiltro)
+        .where('fecha', isLessThanOrEqualTo: finFiltro)
+        .orderBy('fecha', descending: false)
+        .get();
+
+    final Map<String, List<AsistenciaModel>> mapFichadasProfe = {};
+    for (var doc in snap.docs) {
+      final asist = AsistenciaModel.fromFirestore(doc.id, doc.data());
+      mapFichadasProfe.putIfAbsent(asist.profesorId, () => []).add(asist);
+    }
+
+    int procesadas = 0;
+    for (var fichadas in mapFichadasProfe.values) {
+      for (int i = 0; i < fichadas.length; i++) {
+        final entrada = fichadas[i];
+        if (entrada.tipo != 'Entrada') continue;
+        if (i + 1 >= fichadas.length || fichadas[i + 1].tipo != 'Salida') {
+          continue;
+        }
+        final salida = fichadas[i + 1];
+        final double horas = _calcularHorasEntre(entrada, salida);
+        if (horas <= 0) continue;
+
+        await RegistroHorasProfesoresService.registrarSesionTrabajada(
+          profesorId: entrada.profesorId,
+          nombreProfesor: entrada.nombreProfesor,
+          horaEntrada: entrada.fecha,
+          horaSalida: salida.fecha,
+          actividad: entrada.specialty,
+          idRegistro: salida.id,
+        );
+        procesadas++;
+      }
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '✅ Liquidación histórica procesada: $procesadas sesiones del período (las ya generadas se omiten).',
+          ),
+          backgroundColor: Colors.teal,
+        ),
+      );
+    }
   }
 
   // ➕ DIÁLOGO PARA ASENTAR FICHADA MANUL DE CORRECCIÓN (ADMIN)
@@ -203,6 +272,23 @@ class _ReporteHorasProfesoresPageState
                       });
 
                       await batch.commit();
+
+                      // 🚨 Persiste también la sesión trabajada para la
+                      // liquidación de profesores, igual que un fichaje real.
+                      final profeSel = profesores.firstWhere(
+                        (p) => p.id == profeSelId,
+                      );
+                      await RegistroHorasProfesoresService.registrarSesionTrabajada(
+                        profesorId: profeSelId!,
+                        nombreProfesor: profeSelNombre ?? profeSel.nombre,
+                        horaEntrada: dtEntrada,
+                        horaSalida: dtSalida,
+                        actividad: profeSel.especialidades.isNotEmpty
+                            ? profeSel.especialidades.first
+                            : '',
+                        idRegistro: refSalida.id,
+                      );
+
                       Navigator.pop(ctx);
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
@@ -254,31 +340,49 @@ class _ReporteHorasProfesoresPageState
                     ),
                   ],
                 ),
-                StreamBuilder<QuerySnapshot>(
-                  stream: _firestore.collection('profesores').snapshots(),
-                  builder: (context, snapProfes) {
-                    List<ProfesorModel> listaProfes = [];
-                    if (snapProfes.hasData) {
-                      listaProfes = snapProfes.data!.docs
-                          .map((d) => ProfesorModel.fromFirestore(
-                              d.id, d.data() as Map<String, dynamic>))
-                          .toList();
-                    }
-
-                    return ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF0F172A),
+                Row(
+                  children: [
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.teal.shade800,
                         padding: const EdgeInsets.symmetric(
                             horizontal: 20, vertical: 16),
                       ),
-                      onPressed: () => _mostrarDialogoAjusteManual(listaProfes),
-                      icon: const Icon(Icons.access_time_rounded, color: Colors.white),
+                      onPressed: _generarLiquidacionHistorica,
+                      icon: const Icon(Icons.receipt_long_rounded),
                       label: const Text(
-                        'Ajustar Fichada Manual',
-                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                        'Generar Liquidación del Período',
+                        style: TextStyle(fontWeight: FontWeight.bold),
                       ),
-                    );
-                  },
+                    ),
+                    const SizedBox(width: 12),
+                    StreamBuilder<QuerySnapshot>(
+                      stream: _firestore.collection('profesores').snapshots(),
+                      builder: (context, snapProfes) {
+                        List<ProfesorModel> listaProfes = [];
+                        if (snapProfes.hasData) {
+                          listaProfes = snapProfes.data!.docs
+                              .map((d) => ProfesorModel.fromFirestore(
+                                  d.id, d.data() as Map<String, dynamic>))
+                              .toList();
+                        }
+
+                        return ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF0F172A),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 20, vertical: 16),
+                          ),
+                          onPressed: () => _mostrarDialogoAjusteManual(listaProfes),
+                          icon: const Icon(Icons.access_time_rounded, color: Colors.white),
+                          label: const Text(
+                            'Ajustar Fichada Manual',
+                            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
                 ),
               ],
             ),

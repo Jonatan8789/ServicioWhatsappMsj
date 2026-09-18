@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:natatorio_app/features/profesores/profesor_model.dart';
 import 'package:natatorio_app/features/asistencias/asistencia_model.dart';
-import 'package:natatorio_app/features/profesores/profesor_model.dart';
+import 'package:natatorio_app/services/registro_horas_profesores_service.dart';
 
 class NominaDiariaPage extends StatefulWidget {
   const NominaDiariaPage({super.key});
@@ -17,8 +17,9 @@ class _NominaDiariaPageState extends State<NominaDiariaPage> {
 
   Future<void> _registrarAsistencia(ProfesorModel profesor, String tipo) async {
     final hoy = DateTime.now();
-    final idRegistro =
-        "${hoy.year}-${hoy.month.toString().padLeft(2, '0')}-${hoy.day.toString().padLeft(2, '0')}_${profesor.id}_$tipo";
+    final String fechaStr =
+        "${hoy.year}-${hoy.month.toString().padLeft(2, '0')}-${hoy.day.toString().padLeft(2, '0')}";
+    final idRegistro = "${fechaStr}_${profesor.id}_$tipo";
 
     final asistencia = AsistenciaModel(
       id: idRegistro,
@@ -38,6 +39,31 @@ class _NominaDiariaPageState extends State<NominaDiariaPage> {
           .collection('asistencia')
           .doc(idRegistro)
           .set(asistencia.toFirestore());
+
+      // 🚨 Persiste la sesión trabajada para la liquidación de profesores
+      // (pago basado en asistencia real) apenas se cierra con una Salida.
+      if (tipo == 'Salida') {
+        final docEntrada = await _firestore
+            .collection('asistencia')
+            .doc("${fechaStr}_${profesor.id}_Entrada")
+            .get();
+        final DateTime? horaEntrada = docEntrada.exists
+            ? (docEntrada.data()?['fecha'] as Timestamp?)?.toDate()
+            : null;
+        if (horaEntrada != null) {
+          await RegistroHorasProfesoresService.registrarSesionTrabajada(
+            profesorId: profesor.id,
+            nombreProfesor: profesor.nombre,
+            horaEntrada: horaEntrada,
+            horaSalida: hoy,
+            actividad: profesor.especialidades.isNotEmpty
+                ? profesor.especialidades.first
+                : '',
+            idRegistro: idRegistro,
+          );
+        }
+      }
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -60,6 +86,7 @@ class _NominaDiariaPageState extends State<NominaDiariaPage> {
 
   @override
   Widget build(BuildContext context) {
+    final DateTime hoy = DateTime.now();
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       body: Padding(
@@ -200,6 +227,12 @@ class _NominaDiariaPageState extends State<NominaDiariaPage> {
                       child: StreamBuilder<QuerySnapshot>(
                         stream: _firestore
                             .collection('asistencia')
+                            .where(
+                              'fecha',
+                              isGreaterThanOrEqualTo: Timestamp.fromDate(
+                                DateTime(hoy.year, hoy.month, hoy.day),
+                              ),
+                            )
                             .orderBy('fecha', descending: true)
                             .snapshots(),
                         builder: (context, snapshot) {

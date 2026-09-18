@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'torneo_categorias.dart';
 
 class CrearTorneoPage extends StatefulWidget {
   const CrearTorneoPage({super.key});
@@ -17,20 +18,20 @@ class _CrearTorneoPageState extends State<CrearTorneoPage> {
   String _categoriaSeleccionada = '5ta';
   String _ramaSeleccionada = 'Caballeros';
   int _maxParejas = 16;
+  // 🚨 Antes el torneo no tenía formato: se creaba con 'parejas'/'partidos'
+  // vacíos y sin ningún camino real para armar la llave. Ahora se define acá
+  // el formato (y la cantidad de zonas si aplica), que después usa
+  // TorneoFirestoreService para sortear.
+  String _formatoSeleccionado = TorneoCategorias.formatos[0];
+  int _cantidadGrupos = 4;
   bool _cargando = false;
 
-  final List<String> _categorias = [
-    '1ra',
-    '2da',
-    '3ra',
-    '4ta',
-    '5ta',
-    '6ta',
-    '7ta',
-    'Principiantes',
-  ];
-  final List<String> _ramas = ['Caballeros', 'Damas', 'Mixto'];
-  final List<int> _cuposDisponibles = [8, 16, 32];
+  @override
+  void dispose() {
+    _nombreController.dispose();
+    _precioController.dispose();
+    super.dispose();
+  }
 
   Future<void> _guardarTorneo() async {
     if (!_formKey.currentState!.validate()) return;
@@ -49,8 +50,10 @@ class _CrearTorneoPageState extends State<CrearTorneoPage> {
         'precioInscripcion': precio,
         'estado':
             'inscripcion_abierta', // inscripcion_abierta, en_curso, finalizado
-        'parejas': [],
-        'partidos': [],
+        'faseActual': 'inscripcion', // inscripcion, grupos, llave, finalizado
+        'formatoElegido': _formatoSeleccionado,
+        if (_formatoSeleccionado == TorneoCategorias.formatos[2])
+          'cantidadGruposElegida': _cantidadGrupos,
         'fechaCreacion': FieldValue.serverTimestamp(),
       });
 
@@ -133,14 +136,14 @@ class _CrearTorneoPageState extends State<CrearTorneoPage> {
                       // Categoría
                       Expanded(
                         child: DropdownButtonFormField<String>(
-                          value: _categoriaSeleccionada,
+                          initialValue: _categoriaSeleccionada,
                           decoration: InputDecoration(
                             labelText: 'Categoría',
                             border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(10),
                             ),
                           ),
-                          items: _categorias
+                          items: TorneoCategorias.lista
                               .map(
                                 (cat) => DropdownMenuItem(
                                   value: cat,
@@ -159,14 +162,14 @@ class _CrearTorneoPageState extends State<CrearTorneoPage> {
                       // Rama
                       Expanded(
                         child: DropdownButtonFormField<String>(
-                          value: _ramaSeleccionada,
+                          initialValue: _ramaSeleccionada,
                           decoration: InputDecoration(
                             labelText: 'Rama',
                             border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(10),
                             ),
                           ),
-                          items: _ramas
+                          items: TorneoCategorias.ramas
                               .map(
                                 (r) =>
                                     DropdownMenuItem(value: r, child: Text(r)),
@@ -187,14 +190,14 @@ class _CrearTorneoPageState extends State<CrearTorneoPage> {
                       // Cupo Máximo de Parejas
                       Expanded(
                         child: DropdownButtonFormField<int>(
-                          value: _maxParejas,
+                          initialValue: _maxParejas,
                           decoration: InputDecoration(
                             labelText: 'Cupo de Parejas',
                             border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(10),
                             ),
                           ),
-                          items: _cuposDisponibles
+                          items: TorneoCategorias.cuposDisponibles
                               .map(
                                 (c) => DropdownMenuItem(
                                   value: c,
@@ -228,6 +231,60 @@ class _CrearTorneoPageState extends State<CrearTorneoPage> {
                       ),
                     ],
                   ),
+                  const SizedBox(height: 24),
+
+                  const Text(
+                    'Paso B: Formato del Torneo',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF0F172A),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: _formatoSeleccionado,
+                    decoration: InputDecoration(
+                      labelText: 'Formato',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    items: TorneoCategorias.formatos
+                        .map(
+                          (f) => DropdownMenuItem(value: f, child: Text(f)),
+                        )
+                        .toList(),
+                    onChanged: (val) {
+                      if (val != null) {
+                        setState(() => _formatoSeleccionado = val);
+                      }
+                    },
+                  ),
+                  if (_formatoSeleccionado == TorneoCategorias.formatos[2]) ...[
+                    const SizedBox(height: 16),
+                    DropdownButtonFormField<int>(
+                      initialValue: _cantidadGrupos,
+                      decoration: InputDecoration(
+                        labelText: 'Cantidad de Zonas',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                      items: [2, 4, 8]
+                          .where((c) => _maxParejas >= c * 2)
+                          .map(
+                            (c) => DropdownMenuItem(
+                              value: c,
+                              child: Text('$c Zonas'),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (val) {
+                        if (val != null) setState(() => _cantidadGrupos = val);
+                      },
+                    ),
+                  ],
                   const SizedBox(height: 30),
 
                   _cargando

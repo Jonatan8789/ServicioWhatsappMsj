@@ -149,8 +149,8 @@ class _MenuBuffetPageState extends State<MenuBuffetPage> {
                   ? 'Nuevo Artículo / Combo'
                   : 'Editar Artículo / Combo',
             ),
-            content: SizedBox(
-              width: 600,
+            content: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 600),
               child: Form(
                 key: formKey,
                 child: SingleChildScrollView(

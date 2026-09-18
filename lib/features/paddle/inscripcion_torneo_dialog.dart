@@ -2,17 +2,22 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'torneo_categorias.dart';
 
 class InscripcionTorneoDialog extends StatefulWidget {
   final String torneoId;
   final String nombreTorneo;
   final double precioInscripcion;
+  // 🚨 Necesario para poder avisar si un jugador se anota por debajo de su
+  // categoría real (ver _categoriaSuperiorALaDelTorneo).
+  final String categoriaTorneo;
 
   const InscripcionTorneoDialog({
     super.key,
     required this.torneoId,
     this.nombreTorneo = 'Torneo de Pádel',
     this.precioInscripcion = 0.0,
+    this.categoriaTorneo = '5ta',
   });
 
   @override
@@ -49,16 +54,7 @@ class _InscripcionTorneoDialogState extends State<InscripcionTorneoDialog> {
   bool _emitirFacturaFiscal = false; // 👈 Alternar entre ARCA o Ticket X
   bool _guardando = false;
 
-  final List<String> _categoriasPadel = [
-    '1ra',
-    '2da',
-    '3ra',
-    '4ta',
-    '5ta',
-    '6ta',
-    '7ma',
-    'Principiantes',
-  ];
+  final List<String> _categoriasPadel = TorneoCategorias.lista;
 
   @override
   void dispose() {
@@ -270,6 +266,7 @@ class _InscripcionTorneoDialogState extends State<InscripcionTorneoDialog> {
         'puntoVenta': configData['puntoVenta'] ?? 1,
         'comprobanteTipo': configData['comprobanteTipo'] ?? 11,
         'modoProduccion': configData['modoProduccion'] ?? false,
+        'concepto': 2, // Servicio (inscripción a torneo)
       });
 
       if (response.data['success'] == true) {
@@ -310,8 +307,8 @@ class _InscripcionTorneoDialogState extends State<InscripcionTorneoDialog> {
             ),
         ],
       ),
-      content: SizedBox(
-        width: 580,
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 580),
         child: SingleChildScrollView(
           child: Form(
             key: _formKey,
@@ -487,7 +484,58 @@ class _InscripcionTorneoDialogState extends State<InscripcionTorneoDialog> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 16),
+
+                // 🚨 Validación de categoría: antes nada impedía que un
+                // jugador de nivel alto se anotara en una categoría inferior
+                // a la real (el campo 'categoria' del torneo existía pero
+                // nunca se contrastaba contra la categoriaPaddle real del
+                // jugador). Es un aviso, no un bloqueo — el operador decide.
+                if (TorneoCategorias.esNivelSuperior(
+                      _categoria1,
+                      widget.categoriaTorneo,
+                    ) ||
+                    TorneoCategorias.esNivelSuperior(
+                      _categoria2,
+                      widget.categoriaTorneo,
+                    ))
+                  Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.only(bottom: 12),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.orange.shade300),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(
+                          Icons.warning_amber_rounded,
+                          color: Colors.orange.shade800,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Este torneo es de ${widget.categoriaTorneo}, pero '
+                            '${TorneoCategorias.esNivelSuperior(_categoria1, widget.categoriaTorneo) ? _nombre1Controller.text.trim().isEmpty ? "el Jugador 1" : _nombre1Controller.text.trim() : ""}'
+                            '${TorneoCategorias.esNivelSuperior(_categoria1, widget.categoriaTorneo) && TorneoCategorias.esNivelSuperior(_categoria2, widget.categoriaTorneo) ? " y " : ""}'
+                            '${TorneoCategorias.esNivelSuperior(_categoria2, widget.categoriaTorneo) ? _nombre2Controller.text.trim().isEmpty ? "el Jugador 2" : _nombre2Controller.text.trim() : ""}'
+                            ' está anotado con una categoría superior (${[
+                              if (TorneoCategorias.esNivelSuperior(_categoria1, widget.categoriaTorneo)) _categoria1,
+                              if (TorneoCategorias.esNivelSuperior(_categoria2, widget.categoriaTorneo)) _categoria2,
+                            ].toSet().join(', ')}). Verificá que no corresponda jugar en una categoría más alta.',
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              color: Colors.orange.shade900,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
 
                 TextFormField(
                   controller: _restriccionHorariaController,

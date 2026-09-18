@@ -34,6 +34,8 @@ dependencies:
   mobile_scanner: ^7.2.0
   cloud_functions: ^5.2.0
   image_picker: ^1.1.0
+  qr_flutter: ^4.1.0
+  fl_chart: ^0.69.0
 
 
   

@@ -23,6 +23,32 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore();
 
+// 🚨 Antes NINGUNA ruta de este servidor verificaba quién llamaba: cualquiera
+// que encontrara la URL de Render podía mandar WhatsApps desde el número del
+// club, forzar un logout, o ver el QR de vinculación. /status, /logout y
+// /send-whatsapp ahora exigen el ID token de Firebase de un usuario con rol
+// 'admin' en /usuarios/{uid} (el mismo esquema que ya usan las Cloud Functions
+// de AFIP/Mercado Pago).
+async function requireAdminToken(req, res, next) {
+    try {
+        const authHeader = req.get('Authorization') || '';
+        const match = authHeader.match(/^Bearer (.+)$/);
+        if (!match) {
+            return res.status(401).json({ success: false, error: 'Falta token de autenticación.' });
+        }
+        const decoded = await admin.auth().verifyIdToken(match[1]);
+        const userDoc = await db.collection('usuarios').doc(decoded.uid).get();
+        const rol = userDoc.exists ? userDoc.data().rol : null;
+        const activo = userDoc.exists ? (userDoc.data().activo ?? true) : false;
+        if (rol !== 'admin' || !activo) {
+            return res.status(403).json({ success: false, error: 'No tenés permisos de administrador.' });
+        }
+        next();
+    } catch (err) {
+        return res.status(401).json({ success: false, error: 'Token inválido.' });
+    }
+}
+
 let sock = null;
 let latestQrBase64 = null;
 let isConnected = false;
@@ -140,15 +166,21 @@ app.get('/health', (req, res) => {
 });
 
 // 📌 ENDPOINT: Consultar estado actual
-app.get('/status', (req, res) => {
+app.get('/status', requireAdminToken, (req, res) => {
     res.json({
         connected: isConnected,
         qr: latestQrBase64,
     });
 });
 
-// 📌 ENDPOINT: Visualizar QR en navegador web
+// 📌 ENDPOINT: Visualizar QR en navegador web (se abre directo en el
+// navegador por un admin parado en la terminal, así que no puede llevar un
+// header Authorization — se protege con una clave por query param en su
+// lugar. Configurar ADMIN_LINK_KEY en las variables de entorno de Render.)
 app.get('/qr', (req, res) => {
+    if (!process.env.ADMIN_LINK_KEY || req.query.key !== process.env.ADMIN_LINK_KEY) {
+        return res.status(403).send('Acceso denegado. Falta o es inválida la clave de acceso (?key=...).');
+    }
     if (isConnected) {
         return res.send(`
             <div style="font-family: sans-serif; text-align: center; margin-top: 50px;">
@@ -192,7 +224,7 @@ app.get('/qr', (req, res) => {
 });
 
 // 📌 ENDPOINT: Cerrar sesión y desvincular
-app.post('/logout', async (req, res) => {
+app.post('/logout', requireAdminToken, async (req, res) => {
     try {
         if (sock) {
             await sock.logout();
@@ -212,7 +244,7 @@ app.post('/logout', async (req, res) => {
 });
 
 // 📌 ENDPOINT: Enviar mensaje de WhatsApp
-app.post('/send-whatsapp', async (req, res) => {
+app.post('/send-whatsapp', requireAdminToken, async (req, res) => {
     const { phone, message } = req.body;
     if (!isConnected || !sock) {
         return res.status(500).json({ success: false, error: 'WhatsApp no está conectado' });

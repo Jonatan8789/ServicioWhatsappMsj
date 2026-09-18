@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'inventario_general_model.dart';
+import 'movimiento_stock_service.dart';
 
 class InventarioGeneralPage extends StatefulWidget {
   const InventarioGeneralPage({super.key});
@@ -77,8 +79,8 @@ class _InventarioGeneralPageState extends State<InventarioGeneralPage> {
                 ? '⚙️ Dar de Alta en Inventario Central'
                 : '📝 Editar Ítem de Inventario',
           ),
-          content: SizedBox(
-            width: 650,
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 650),
             child: Form(
               key: _formKey,
               child: SingleChildScrollView(
@@ -443,13 +445,40 @@ class _InventarioGeneralPageState extends State<InventarioGeneralPage> {
                             _categoriaCtrl == 'Menú Diario'),
                   };
 
+                  final String usuarioActual =
+                      FirebaseAuth.instance.currentUser?.email ?? 'Admin';
+                  final int stockNuevo = data['stockActual'] as int;
+
                   if (articulo == null) {
-                    await _firestore.collection('inventario_general').add(data);
+                    final nuevoDoc = await _firestore
+                        .collection('inventario_general')
+                        .add(data);
+                    if (stockNuevo != 0) {
+                      await MovimientoStockService.registrarMovimiento(
+                        productoId: nuevoDoc.id,
+                        productoNombre: data['nombre'] as String,
+                        tipo: 'Alta Inicial',
+                        cantidad: stockNuevo,
+                        usuario: usuarioActual,
+                      );
+                    }
                   } else {
                     await _firestore
                         .collection('inventario_general')
                         .doc(articulo.id)
                         .update(data);
+                    // 🚨 Sólo se audita cuando el número realmente cambió a
+                    // mano (esta pantalla no es una venta ni un combo).
+                    final int delta = stockNuevo - articulo.stockActual;
+                    if (delta != 0) {
+                      await MovimientoStockService.registrarMovimiento(
+                        productoId: articulo.id,
+                        productoNombre: data['nombre'] as String,
+                        tipo: 'Ajuste Manual',
+                        cantidad: delta,
+                        usuario: usuarioActual,
+                      );
+                    }
                   }
                   if (context.mounted) Navigator.pop(context);
                 }

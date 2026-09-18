@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'socio_model.dart';
 import 'bloque_horario_model.dart';
 
@@ -159,14 +160,34 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
     }
   }
 
+  // 🚨 Antes no había límite de tamaño para foto/apto médico.
+  static const int _tamanioMaximoBytes = 8 * 1024 * 1024; // 8 MB
+
+  bool _archivoDentroDelLimite(int bytes) {
+    if (bytes <= _tamanioMaximoBytes) return true;
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'El archivo supera los 8 MB permitidos. Elegí uno más liviano.',
+          ),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+    return false;
+  }
+
   Future<void> _seleccionarFoto() async {
     final resultado = await FilePicker.pickFiles(
       type: FileType.image,
       withData: true,
     );
     if (resultado != null && resultado.files.first.bytes != null) {
+      final bytes = resultado.files.first.bytes!;
+      if (!_archivoDentroDelLimite(bytes.length)) return;
       setState(() {
-        _fotoBytes = resultado.files.first.bytes;
+        _fotoBytes = bytes;
         _fotoNombre = resultado.files.first.name;
       });
     }
@@ -179,14 +200,19 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
       withData: true,
     );
     if (resultado != null && resultado.files.first.bytes != null) {
+      final bytes = resultado.files.first.bytes!;
+      if (!_archivoDentroDelLimite(bytes.length)) return;
       setState(() {
-        _aptoBytes = resultado.files.first.bytes;
+        _aptoBytes = bytes;
         _aptoNombre = resultado.files.first.name;
       });
     }
   }
 
-  Future<String> _subirArchivo(
+  // 🚨 Antes devolvía '' en error — indistinguible de "subida exitosa a un
+  // archivo vacío" para el llamador, que terminaba pisando la URL buena
+  // existente con ''. Ahora null en error hace explícito el fallo.
+  Future<String?> _subirArchivo(
     Uint8List bytes,
     String carpeta,
     String prefijo,
@@ -209,7 +235,21 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
       final uploadTask = await ref.putData(bytes, metadata);
       return await uploadTask.ref.getDownloadURL();
     } catch (e) {
-      return '';
+      debugPrint('Error subiendo archivo: $e');
+      return null;
+    }
+  }
+
+  // 🚨 Reemplazar una foto/apto nunca borraba el archivo anterior en Storage
+  // — cada actualización dejaba un huérfano permanente. Best-effort: si la
+  // URL vieja no es una referencia válida de Storage (dato legacy/externo),
+  // simplemente no hace nada.
+  Future<void> _borrarArchivoAnterior(String urlVieja) async {
+    if (urlVieja.isEmpty) return;
+    try {
+      await FirebaseStorage.instance.refFromURL(urlVieja).delete();
+    } catch (e) {
+      debugPrint('No se pudo borrar el archivo anterior ($urlVieja): $e');
     }
   }
 
@@ -221,23 +261,37 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
     try {
       String fotoUrlFinal = widget.socio.fotoUrl;
       String aptoUrlFinal = widget.socio.aptoUrl;
+      bool fotoFallo = false;
+      bool aptoFallo = false;
       final dni = _dniController.text.trim();
 
       if (_fotoBytes != null && _fotoNombre != null) {
-        fotoUrlFinal = await _subirArchivo(
+        final resultado = await _subirArchivo(
           _fotoBytes!,
           'socios/fotos',
           dni.isEmpty ? 'foto' : dni,
           _fotoNombre!,
         );
+        if (resultado != null) {
+          await _borrarArchivoAnterior(widget.socio.fotoUrl);
+          fotoUrlFinal = resultado;
+        } else {
+          fotoFallo = true; // 🚨 conserva fotoUrlFinal = widget.socio.fotoUrl
+        }
       }
       if (_aptoBytes != null && _aptoNombre != null) {
-        aptoUrlFinal = await _subirArchivo(
+        final resultado = await _subirArchivo(
           _aptoBytes!,
           'socios/aptos',
           dni.isEmpty ? 'apto' : dni,
           _aptoNombre!,
         );
+        if (resultado != null) {
+          await _borrarArchivoAnterior(widget.socio.aptoUrl);
+          aptoUrlFinal = resultado;
+        } else {
+          aptoFallo = true; // 🚨 conserva aptoUrlFinal = widget.socio.aptoUrl
+        }
       }
 
       final numLimpio = _telefonoController.text.replaceAll(
@@ -255,6 +309,13 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
         aptoUrl: aptoUrlFinal,
         fechaAlta: widget.socio.fechaAlta,
         activo: widget.socio.activo,
+        matriculaAlDia: widget.socio.matriculaAlDia,
+        fechaPagoMatricula: widget.socio.fechaPagoMatricula,
+        ultimoMesPago: widget.socio.ultimoMesPago,
+        mesesCubiertosHasta: widget.socio.mesesCubiertosHasta,
+        huellaHash: widget.socio.huellaHash,
+        huellasHashes: widget.socio.huellasHashes,
+        grupoFamiliarId: widget.socio.grupoFamiliarId,
         fechaNacimiento: _fechaNacimiento,
         vencimientoAptoMedico:
             _vencimientoApto ?? DateTime.now().add(const Duration(days: 365)),
@@ -286,12 +347,26 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
           .update(mapData);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('¡Datos actualizados correctamente!'),
-            backgroundColor: Colors.green,
-          ),
-        );
+        if (fotoFallo || aptoFallo) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Datos actualizados, pero ${[
+                  if (fotoFallo) 'la foto',
+                  if (aptoFallo) 'el apto médico',
+                ].join(' y ')} no se pudo subir — se conservó el archivo anterior. Reintentá más tarde.',
+              ),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('¡Datos actualizados correctamente!'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
         widget.onVolver();
       }
     } catch (e) {
@@ -591,6 +666,22 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                   ),
+                                  // 🚨 Antes no había forma de ver el
+                                  // certificado ya cargado sin volver a la
+                                  // ficha del socio.
+                                  if (_aptoNombre == null &&
+                                      widget.socio.aptoUrl.isNotEmpty)
+                                    TextButton.icon(
+                                      onPressed: () => launchUrl(
+                                        Uri.parse(widget.socio.aptoUrl),
+                                        mode: LaunchMode.externalApplication,
+                                      ),
+                                      icon: const Icon(
+                                        Icons.visibility_outlined,
+                                        size: 18,
+                                      ),
+                                      label: const Text('Ver'),
+                                    ),
                                 ],
                               ),
                             ),

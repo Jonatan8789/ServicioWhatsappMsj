@@ -4,6 +4,8 @@ import 'package:intl/intl.dart';
 import 'socio_model.dart';
 import '../cuentas_corrientes/cuenta_corriente_page.dart';
 import '../../pages/plan_pago_dialog.dart';
+import '../../shared/csv_utils.dart';
+import '../../shared/csv_download.dart';
 
 class SociosPage extends StatefulWidget {
   final String rolUsuario;
@@ -36,6 +38,49 @@ class _SociosPageState extends State<SociosPage> {
     }
   }
 
+  Future<void> _exportarCsv() async {
+    final snap = await FirebaseFirestore.instance.collection('socios').get();
+    final socios = snap.docs
+        .map((doc) => SocioModel.fromFirestore(doc))
+        .where((socio) {
+          if (_terminoBusqueda.isEmpty) return true;
+          return socio.nombre.toLowerCase().contains(_terminoBusqueda) ||
+              socio.dni.toLowerCase().contains(_terminoBusqueda) ||
+              socio.numeroSocio.toLowerCase().contains(_terminoBusqueda);
+        })
+        .toList();
+
+    final csv = generarCsv(
+      ['N° Socio', 'Nombre', 'DNI', 'Deporte', 'Frecuencia', 'Saldo Cta. Cte.', 'Activo'],
+      socios
+          .map(
+            (s) => [
+              s.numeroSocio,
+              s.nombre,
+              s.dni,
+              s.deporte,
+              s.frecuencia,
+              s.saldoCuentaCorriente.toStringAsFixed(2),
+              s.activo ? 'Sí' : 'No',
+            ],
+          )
+          .toList(),
+    );
+
+    try {
+      descargarCsv(
+        'socios_${DateFormat('yyyy-MM-dd').format(DateTime.now())}.csv',
+        csv,
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('No se pudo exportar: $e')));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final bool esAdmin = widget.rolUsuario == 'admin';
@@ -65,26 +110,37 @@ class _SociosPageState extends State<SociosPage> {
                   ),
                 ],
               ),
-              if (esAdmin)
-                ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.teal,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 24,
-                      vertical: 16,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
+              Row(
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: _exportarCsv,
+                    icon: const Icon(Icons.download_rounded, size: 18),
+                    label: const Text('Exportar CSV'),
                   ),
-                  icon: const Icon(Icons.add_rounded),
-                  label: const Text(
-                    'Nuevo Socio',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  onPressed: widget.onNuevoSocio,
-                ),
+                  if (esAdmin) ...[
+                    const SizedBox(width: 12),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.teal,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 16,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      icon: const Icon(Icons.add_rounded),
+                      label: const Text(
+                        'Nuevo Socio',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      onPressed: widget.onNuevoSocio,
+                    ),
+                  ],
+                ],
+              ),
             ],
           ),
           const SizedBox(height: 30),
@@ -127,13 +183,27 @@ class _SociosPageState extends State<SociosPage> {
                 final sociosFiltrados = snapshot.data!.docs
                     .map((doc) => SocioModel.fromFirestore(doc))
                     .where((socio) {
+                      // 🚨 Compara también sin ceros a la izquierda: los
+                      // ~609 socios migrados tienen numeroSocio SIN padding
+                      // ("4"), mientras que el alta nueva lo guarda con
+                      // padding ("0004") — sin esto, buscar "0004" no
+                      // encontraba al socio migrado con el mismo número.
+                      final numeroSinCeros = socio.numeroSocio.replaceFirst(
+                        RegExp(r'^0+(?=\d)'),
+                        '',
+                      );
+                      final busquedaSinCeros = _terminoBusqueda.replaceFirst(
+                        RegExp(r'^0+(?=\d)'),
+                        '',
+                      );
                       return socio.nombre.toLowerCase().contains(
                             _terminoBusqueda,
                           ) ||
                           socio.dni.toLowerCase().contains(_terminoBusqueda) ||
                           socio.numeroSocio.toLowerCase().contains(
                             _terminoBusqueda,
-                          );
+                          ) ||
+                          numeroSinCeros.contains(busquedaSinCeros);
                     })
                     .toList();
 
