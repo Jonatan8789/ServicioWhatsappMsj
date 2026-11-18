@@ -289,13 +289,14 @@ class _ReporteHorasProfesoresPageState
                         idRegistro: refSalida.id,
                       );
 
-                      Navigator.pop(ctx);
+                      if (!mounted) return;
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
                           content: Text('✅ Asistencia cargada manualmente.'),
                           backgroundColor: Colors.green,
                         ),
                       );
+                      if (ctx.mounted) Navigator.pop(ctx);
                     },
               child: const Text('Cargar Fichada', style: TextStyle(color: Colors.white)),
             ),

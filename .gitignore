@@ -33,6 +33,13 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Credenciales locales (nunca deben commitearse) — usadas por set-cors.js y
+# por la integración ARCA de functions/, que las espera en el filesystem
+# local/del servidor, no en el repo.
+serviceAccountKey*.json
+*-firebase-adminsdk-*.json
+functions/certificados/
+
 # Symbolication related
 app.*.symbols
 

@@ -16,6 +16,34 @@ class _LiquidacionesProfesoresPageState
 
   String? _profesorFiltroId;
 
+  // 💸 Antes esto eran 3 niveles de StreamBuilder anidados: tarifas →
+  // profesores → y, DENTRO del itemBuilder de cada profesor, un listener en
+  // vivo más sobre 'registro_horas_profes' — es decir, un listener nuevo
+  // por cada profesor en la nómina, todos re-facturándose mientras esta
+  // pantalla (un reporte administrativo que se abre, se mira y se cierra)
+  // quedara montada. Ahora son 3 lecturas puntuales en paralelo (una sola
+  // consulta de horas pendientes para TODOS los profesores, agrupada en
+  // memoria) que se piden una vez al entrar y se refrescan solas después
+  // de emitir una liquidación.
+  Future<List<QuerySnapshot>>? _consolidadoFuture;
+
+  void _cargarConsolidado() {
+    _consolidadoFuture = Future.wait([
+      _firestore.collection('tarifas_honorarios_profes').get(),
+      _firestore.collection('profesores').get(),
+      _firestore
+          .collection('registro_horas_profes')
+          .where('liquidado', isEqualTo: false)
+          .get(),
+    ]);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _cargarConsolidado();
+  }
+
   // 📝 DIÁLOGO PARA REGISTRAR/ACTUALIZAR ESQUEMA DE TARIFAS CON ACTIVIDADES CONFIGURADAS
   void _mostrarDialogoConfiguracionTarifa({
     String? profesorId,
@@ -156,8 +184,7 @@ class _LiquidacionesProfesoresPageState
                   'fechaRegistro': DateTime.now(),
                 });
 
-                if (mounted) {
-                  Navigator.pop(ctx);
+                if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
                       content: Text(
@@ -167,6 +194,7 @@ class _LiquidacionesProfesoresPageState
                     ),
                   );
                 }
+                if (ctx.mounted) Navigator.pop(ctx);
               },
               child: const Text(
                 'Guardar Vigencia',
@@ -230,383 +258,151 @@ class _LiquidacionesProfesoresPageState
           ),
         ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(24.0),
-        child: Row(
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          // 📱 Por debajo de este ancho el histórico de tarifas y el
+          // consolidado de horas no entran lado a lado (era un Row fijo
+          // flex:2/flex:3): se apilan en una columna con scroll. Ambos paneles
+          // tienen adentro listas que se expanden, así que fuera del Row
+          // original necesitan una altura acotada para tener límite vertical.
+          final bool esMovil = constraints.maxWidth < 700;
+
+          if (esMovil) {
+            return SingleChildScrollView(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  SizedBox(height: 420, child: _buildHistoricoTarifas()),
+                  const SizedBox(height: 16),
+                  SizedBox(height: 450, child: _buildConsolidadoHoras()),
+                ],
+              ),
+            );
+          }
+
+          return Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // 📊 SECCIÓN IZQUIERDA: HISTÓRICO DE TARIFAS POR ACTIVIDAD
+                Expanded(flex: 2, child: _buildHistoricoTarifas()),
+                const SizedBox(width: 24),
+
+                // 💰 SECCIÓN DERECHA: CONSOLIDADO DE HORAS A LIQUIDAR
+                Expanded(flex: 3, child: _buildConsolidadoHoras()),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildHistoricoTarifas() {
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Colors.grey.shade300),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 📊 SECCIÓN IZQUIERDA: HISTÓRICO EN PANTALLA DE TARIFAS POR ACTIVIDAD
-            Expanded(
-              flex: 2,
-              child: Card(
-                elevation: 0,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  side: BorderSide(color: Colors.grey.shade300),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text(
-                            'Histórico de Tarifas & Vigencias',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
-                              color: Color(0xFF0F172A),
-                            ),
-                          ),
-                          ElevatedButton.icon(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.teal.shade800,
-                              foregroundColor: Colors.white,
-                            ),
-                            icon: const Icon(Icons.add, size: 16),
-                            label: const Text('Asignar Tarifa'),
-                            onPressed: () =>
-                                _mostrarDialogoConfiguracionTarifa(),
-                          ),
-                        ],
-                      ),
-                      const Divider(height: 20),
-                      Expanded(
-                        child: StreamBuilder<QuerySnapshot>(
-                          stream: _firestore
-                              .collection('tarifas_honorarios_profes')
-                              .orderBy('fechaInicioVigencia', descending: true)
-                              .snapshots(),
-                          builder: (context, snapshot) {
-                            if (!snapshot.hasData) {
-                              return const Center(
-                                child: CircularProgressIndicator(),
-                              );
-                            }
-
-                            final docs = snapshot.data!.docs;
-                            if (docs.isEmpty) {
-                              return const Center(
-                                child: Text(
-                                  'Sin tarifas registradas. Creá una tarifa por actividad.',
-                                  style: TextStyle(color: Colors.grey),
-                                ),
-                              );
-                            }
-
-                            return ListView.builder(
-                              itemCount: docs.length,
-                              itemBuilder: (context, i) {
-                                final data =
-                                    docs[i].data() as Map<String, dynamic>;
-                                final DateTime vigencia =
-                                    (data['fechaInicioVigencia'] as Timestamp)
-                                        .toDate();
-                                final double valor =
-                                    (data['valorHora'] as num?)?.toDouble() ??
-                                    0.0;
-
-                                return Container(
-                                  margin: const EdgeInsets.only(bottom: 8),
-                                  padding: const EdgeInsets.all(12),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white,
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: Border.all(
-                                      color: Colors.grey.shade200,
-                                    ),
-                                  ),
-                                  child: Row(
-                                    mainAxisAlignment:
-                                        MainAxisAlignment.spaceBetween,
-                                    children: [
-                                      Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            '${data['actividad']} (${data['profesorNombre']})',
-                                            style: const TextStyle(
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                          Text(
-                                            'Vigencia desde: ${DateFormat('dd/MM/yyyy').format(vigencia)}',
-                                            style: const TextStyle(
-                                              fontSize: 12,
-                                              color: Colors.grey,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      Text(
-                                        '\$${valor.toStringAsFixed(2)} / hora',
-                                        style: TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          color: Colors.green.shade800,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              },
-                            );
-                          },
-                        ),
-                      ),
-                    ],
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'Histórico de Tarifas & Vigencias',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                    color: Color(0xFF0F172A),
                   ),
                 ),
-              ),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.teal.shade800,
+                    foregroundColor: Colors.white,
+                  ),
+                  icon: const Icon(Icons.add, size: 16),
+                  label: const Text('Asignar Tarifa'),
+                  onPressed: () => _mostrarDialogoConfiguracionTarifa(),
+                ),
+              ],
             ),
-            const SizedBox(width: 24),
-
-            // 💰 SECCIÓN DERECHA: CONSOLIDADO DE HORAS A LIQUIDAR
+            const Divider(height: 20),
             Expanded(
-              flex: 3,
               child: StreamBuilder<QuerySnapshot>(
                 stream: _firestore
                     .collection('tarifas_honorarios_profes')
+                    .orderBy('fechaInicioVigencia', descending: true)
                     .snapshots(),
-                builder: (context, snapTarifas) {
-                  if (!snapTarifas.hasData) {
+                builder: (context, snapshot) {
+                  if (!snapshot.hasData) {
                     return const Center(child: CircularProgressIndicator());
                   }
 
-                  final listaTarifas = snapTarifas.data!.docs;
+                  final docs = snapshot.data!.docs;
+                  if (docs.isEmpty) {
+                    return const Center(
+                      child: Text(
+                        'Sin tarifas registradas. Creá una tarifa por actividad.',
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    );
+                  }
 
-                  return StreamBuilder<QuerySnapshot>(
-                    stream: _firestore.collection('profesores').snapshots(),
-                    builder: (context, snapProfes) {
-                      if (!snapProfes.hasData) {
-                        return const Center(child: CircularProgressIndicator());
-                      }
+                  return ListView.builder(
+                    itemCount: docs.length,
+                    itemBuilder: (context, i) {
+                      final data = docs[i].data() as Map<String, dynamic>;
+                      final DateTime vigencia =
+                          (data['fechaInicioVigencia'] as Timestamp).toDate();
+                      final double valor =
+                          (data['valorHora'] as num?)?.toDouble() ?? 0.0;
 
-                      final profes = snapProfes.data!.docs;
-
-                      return ListView.builder(
-                        itemCount: profes.length,
-                        itemBuilder: (context, idx) {
-                          final pData =
-                              profes[idx].data() as Map<String, dynamic>;
-                          final String pId = profes[idx].id;
-                          final String pNombre = pData['nombre'] ?? 'Profesor';
-
-                          return StreamBuilder<QuerySnapshot>(
-                            stream: _firestore
-                                .collection('registro_horas_profes')
-                                .where('profesorId', isEqualTo: pId)
-                                .where('liquidado', isEqualTo: false)
-                                .snapshots(),
-                            builder: (context, snapHoras) {
-                              Map<String, double> totalHorasPorActividad = {};
-                              Map<String, double> totalMontoPorActividad = {};
-                              double acumuladoGeneralARS = 0.0;
-
-                              if (snapHoras.hasData) {
-                                for (var hDoc in snapHoras.data!.docs) {
-                                  final hData =
-                                      hDoc.data() as Map<String, dynamic>;
-                                  final double cantHoras =
-                                      (hData['cantidadHoras'] as num?)
-                                          ?.toDouble() ??
-                                      0.0;
-                                  final String actividad =
-                                      hData['actividad'] ??
-                                      hData['funcion'] ??
-                                      'Natatorio';
-                                  final DateTime fechaHora =
-                                      (hData['fecha'] as Timestamp).toDate();
-
-                                  final double tarifaAplicable =
-                                      _obtenerTarifaVigenteParaHora(
-                                        listaTarifas: listaTarifas,
-                                        profesorId: pId,
-                                        actividad: actividad,
-                                        fechaHoraTrabajada: fechaHora,
-                                      );
-
-                                  final double subtotalARS =
-                                      cantHoras * tarifaAplicable;
-
-                                  totalHorasPorActividad[actividad] =
-                                      (totalHorasPorActividad[actividad] ?? 0) +
-                                      cantHoras;
-                                  totalMontoPorActividad[actividad] =
-                                      (totalMontoPorActividad[actividad] ?? 0) +
-                                      subtotalARS;
-                                  acumuladoGeneralARS += subtotalARS;
-                                }
-                              }
-
-                              return Card(
-                                margin: const EdgeInsets.only(bottom: 16),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(12),
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.grey.shade200),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '${data['actividad']} (${data['profesorNombre']})',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
-                                child: ExpansionTile(
-                                  leading: const CircleAvatar(
-                                    backgroundColor: Color(0xFF0F172A),
-                                    child: Icon(
-                                      Icons.person,
-                                      color: Colors.white,
-                                    ),
+                                Text(
+                                  'Vigencia desde: ${DateFormat('dd/MM/yyyy').format(vigencia)}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey,
                                   ),
-                                  title: Text(
-                                    pNombre,
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 16,
-                                    ),
-                                  ),
-                                  subtitle: Text(
-                                    'Actividades pendientes: ${totalHorasPorActividad.length}',
-                                    style: const TextStyle(
-                                      color: Colors.blueGrey,
-                                    ),
-                                  ),
-                                  trailing: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    crossAxisAlignment: CrossAxisAlignment.end,
-                                    children: [
-                                      Text(
-                                        '\$${acumuladoGeneralARS.toStringAsFixed(2)} ARS',
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 16,
-                                          color: Colors.green,
-                                        ),
-                                      ),
-                                      const Text(
-                                        'A Liquidar',
-                                        style: TextStyle(
-                                          fontSize: 11,
-                                          color: Colors.grey,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  children: [
-                                    Padding(
-                                      padding: const EdgeInsets.all(16.0),
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          ...totalHorasPorActividad.entries.map((
-                                            entry,
-                                          ) {
-                                            final act = entry.key;
-                                            final horas = entry.value;
-                                            final monto =
-                                                totalMontoPorActividad[act] ??
-                                                0.0;
-
-                                            return Padding(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                    vertical: 4.0,
-                                                  ),
-                                              child: Row(
-                                                mainAxisAlignment:
-                                                    MainAxisAlignment
-                                                        .spaceBetween,
-                                                children: [
-                                                  Text(
-                                                    '• $act: ${horas.toStringAsFixed(1)} hs',
-                                                  ),
-                                                  Text(
-                                                    '\$${monto.toStringAsFixed(2)} ARS',
-                                                    style: const TextStyle(
-                                                      fontWeight:
-                                                          FontWeight.bold,
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            );
-                                          }),
-                                          const Divider(height: 20),
-                                          Row(
-                                            mainAxisAlignment:
-                                                MainAxisAlignment.spaceBetween,
-                                            children: [
-                                              OutlinedButton.icon(
-                                                icon: const Icon(
-                                                  Icons.add,
-                                                  size: 16,
-                                                ),
-                                                label: const Text(
-                                                  'Tarifa Específica',
-                                                ),
-                                                onPressed: () =>
-                                                    _mostrarDialogoConfiguracionTarifa(
-                                                      profesorId: pId,
-                                                      profesorNombre: pNombre,
-                                                    ),
-                                              ),
-                                              ElevatedButton.icon(
-                                                style: ElevatedButton.styleFrom(
-                                                  backgroundColor:
-                                                      Colors.green.shade800,
-                                                ),
-                                                icon: const Icon(
-                                                  Icons.check_circle_outline,
-                                                  color: Colors.white,
-                                                ),
-                                                label: const Text(
-                                                  'Cerrar y Emitir Liquidación',
-                                                  style: TextStyle(
-                                                    color: Colors.white,
-                                                  ),
-                                                ),
-                                                onPressed:
-                                                    acumuladoGeneralARS <= 0
-                                                    ? null
-                                                    : () async {
-                                                        final batch = _firestore
-                                                            .batch();
-                                                        for (var doc
-                                                            in snapHoras
-                                                                .data!
-                                                                .docs) {
-                                                          batch.update(
-                                                            doc.reference,
-                                                            {
-                                                              'liquidado': true,
-                                                              'fechaLiquidacion':
-                                                                  DateTime.now(),
-                                                            },
-                                                          );
-                                                        }
-                                                        await batch.commit();
-
-                                                        if (mounted) {
-                                                          ScaffoldMessenger.of(
-                                                            context,
-                                                          ).showSnackBar(
-                                                            SnackBar(
-                                                              content: Text(
-                                                                '✅ Liquidación registrada para $pNombre',
-                                                              ),
-                                                            ),
-                                                          );
-                                                        }
-                                                      },
-                                              ),
-                                            ],
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
                                 ),
-                              );
-                            },
-                          );
-                        },
+                              ],
+                            ),
+                            Text(
+                              '\$${valor.toStringAsFixed(2)} / hora',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.green.shade800,
+                              ),
+                            ),
+                          ],
+                        ),
                       );
                     },
                   );
@@ -616,6 +412,191 @@ class _LiquidacionesProfesoresPageState
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildConsolidadoHoras() {
+    return FutureBuilder<List<QuerySnapshot>>(
+      future: _consolidadoFuture,
+      builder: (context, snapConsolidado) {
+        if (!snapConsolidado.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final listaTarifas = snapConsolidado.data![0].docs;
+        final profes = snapConsolidado.data![1].docs;
+        final horasPendientes = snapConsolidado.data![2].docs;
+
+        // Agrupado una sola vez en memoria en vez de una consulta en vivo
+        // por profesor.
+        final Map<String, List<QueryDocumentSnapshot>> horasPorProfesor = {};
+        for (var hDoc in horasPendientes) {
+          final String? pIdHora = (hDoc.data() as Map<String, dynamic>)['profesorId'];
+          if (pIdHora == null) continue;
+          (horasPorProfesor[pIdHora] ??= []).add(hDoc);
+        }
+
+        return ListView.builder(
+          itemCount: profes.length,
+          itemBuilder: (context, idx) {
+            final pData = profes[idx].data() as Map<String, dynamic>;
+            final String pId = profes[idx].id;
+            final String pNombre = pData['nombre'] ?? 'Profesor';
+            final List<QueryDocumentSnapshot> horasDelProfesor =
+                horasPorProfesor[pId] ?? [];
+
+            Map<String, double> totalHorasPorActividad = {};
+            Map<String, double> totalMontoPorActividad = {};
+            double acumuladoGeneralARS = 0.0;
+
+            for (var hDoc in horasDelProfesor) {
+              final hData = hDoc.data() as Map<String, dynamic>;
+              final double cantHoras =
+                  (hData['cantidadHoras'] as num?)?.toDouble() ?? 0.0;
+              final String actividad =
+                  hData['actividad'] ?? hData['funcion'] ?? 'Natatorio';
+              final DateTime fechaHora = (hData['fecha'] as Timestamp).toDate();
+
+              final double tarifaAplicable = _obtenerTarifaVigenteParaHora(
+                listaTarifas: listaTarifas,
+                profesorId: pId,
+                actividad: actividad,
+                fechaHoraTrabajada: fechaHora,
+              );
+
+              final double subtotalARS = cantHoras * tarifaAplicable;
+
+              totalHorasPorActividad[actividad] =
+                  (totalHorasPorActividad[actividad] ?? 0) + cantHoras;
+              totalMontoPorActividad[actividad] =
+                  (totalMontoPorActividad[actividad] ?? 0) + subtotalARS;
+              acumuladoGeneralARS += subtotalARS;
+            }
+
+            return Card(
+              margin: const EdgeInsets.only(bottom: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: ExpansionTile(
+                leading: const CircleAvatar(
+                  backgroundColor: Color(0xFF0F172A),
+                  child: Icon(Icons.person, color: Colors.white),
+                ),
+                title: Text(
+                  pNombre,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+                subtitle: Text(
+                  'Actividades pendientes: ${totalHorasPorActividad.length}',
+                  style: const TextStyle(color: Colors.blueGrey),
+                ),
+                trailing: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      '\$${acumuladoGeneralARS.toStringAsFixed(2)} ARS',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                        color: Colors.green,
+                      ),
+                    ),
+                    const Text(
+                      'A Liquidar',
+                      style: TextStyle(fontSize: 11, color: Colors.grey),
+                    ),
+                  ],
+                ),
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        ...totalHorasPorActividad.entries.map((entry) {
+                          final act = entry.key;
+                          final horas = entry.value;
+                          final monto = totalMontoPorActividad[act] ?? 0.0;
+
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4.0),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text('• $act: ${horas.toStringAsFixed(1)} hs'),
+                                Text(
+                                  '\$${monto.toStringAsFixed(2)} ARS',
+                                  style: const TextStyle(fontWeight: FontWeight.bold),
+                                ),
+                              ],
+                            ),
+                          );
+                        }),
+                        const Divider(height: 20),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            OutlinedButton.icon(
+                              icon: const Icon(Icons.add, size: 16),
+                              label: const Text('Tarifa Específica'),
+                              onPressed: () => _mostrarDialogoConfiguracionTarifa(
+                                profesorId: pId,
+                                profesorNombre: pNombre,
+                              ),
+                            ),
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.green.shade800,
+                              ),
+                              icon: const Icon(
+                                Icons.check_circle_outline,
+                                color: Colors.white,
+                              ),
+                              label: const Text(
+                                'Cerrar y Emitir Liquidación',
+                                style: TextStyle(color: Colors.white),
+                              ),
+                              onPressed: acumuladoGeneralARS <= 0
+                                  ? null
+                                  : () async {
+                                      final batch = _firestore.batch();
+                                      for (var doc in horasDelProfesor) {
+                                        batch.update(doc.reference, {
+                                          'liquidado': true,
+                                          'fechaLiquidacion': DateTime.now(),
+                                        });
+                                      }
+                                      await batch.commit();
+                                      _cargarConsolidado();
+
+                                      if (context.mounted) {
+                                        setState(() {});
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(
+                                            content: Text(
+                                              '✅ Liquidación registrada para $pNombre',
+                                            ),
+                                          ),
+                                        );
+                                      }
+                                    },
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }

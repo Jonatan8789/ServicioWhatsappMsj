@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import '../../shared/csv_utils.dart';
 import '../../shared/csv_download.dart';
+import '../../shared/libro_iva_digital_export.dart';
 
 class _VentaFiscal {
   final DateTime fecha;
@@ -11,6 +12,12 @@ class _VentaFiscal {
   final String medioPago;
   final String? cae;
   final double monto;
+  // 🧾 Campos adicionales sólo para el export del Libro de IVA Digital
+  // (no se muestran en la tabla en pantalla, que ya andaba bien sin ellos).
+  final int? tipoComprobanteLegal;
+  final int? puntoVentaLegal;
+  final int? nroFacturaLegal;
+  final String? socioId;
 
   _VentaFiscal({
     required this.fecha,
@@ -19,6 +26,10 @@ class _VentaFiscal {
     required this.medioPago,
     required this.cae,
     required this.monto,
+    this.tipoComprobanteLegal,
+    this.puntoVentaLegal,
+    this.nroFacturaLegal,
+    this.socioId,
   });
 }
 
@@ -58,6 +69,7 @@ class _LibroIvaVentasPageState extends State<LibroIvaVentasPage> {
   );
 
   List<_VentaFiscal>? _ultimaListaCargada;
+  bool _exportandoLibroIva = false;
 
   @override
   Widget build(BuildContext context) {
@@ -86,6 +98,27 @@ class _LibroIvaVentasPageState extends State<LibroIvaVentasPage> {
             icon: const Icon(Icons.download_rounded, size: 20),
             label: const Text(
               'Exportar CSV',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+          const SizedBox(width: 8),
+          OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.white,
+              side: const BorderSide(color: Colors.white54),
+            ),
+            onPressed: _ultimaListaCargada == null || _exportandoLibroIva
+                ? null
+                : () => _exportarLibroIvaDigital(context, _ultimaListaCargada!),
+            icon: _exportandoLibroIva
+                ? const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  )
+                : const Icon(Icons.description_outlined, size: 20),
+            label: const Text(
+              'Libro IVA Digital (TXT)',
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
           ),
@@ -166,6 +199,10 @@ class _LibroIvaVentasPageState extends State<LibroIvaVentasPage> {
                             medioPago: data['medio_pago']?.toString() ?? '-',
                             cae: data['cae']?.toString(),
                             monto: (data['total'] as num?)?.toDouble() ?? 0.0,
+                            tipoComprobanteLegal: (data['tipoComprobanteLegal'] as num?)?.toInt(),
+                            puntoVentaLegal: (data['puntoVentaLegal'] as num?)?.toInt(),
+                            nroFacturaLegal: (data['nroFacturaLegal'] as num?)?.toInt(),
+                            socioId: data['socio_id']?.toString(),
                           ),
                         );
                       }
@@ -174,6 +211,10 @@ class _LibroIvaVentasPageState extends State<LibroIvaVentasPage> {
                         final data = doc.data() as Map<String, dynamic>;
                         final Timestamp? t = data['fecha'] as Timestamp?;
                         if (t == null) continue;
+                        // 🚨 El socioId de una cuota no está en el propio
+                        // documento: es el padre de la subcolección
+                        // (socios/{socioId}/cuenta_corriente/{este_doc}).
+                        final String? socioIdCuota = doc.reference.parent.parent?.id;
                         lista.add(
                           _VentaFiscal(
                             fecha: t.toDate(),
@@ -186,6 +227,10 @@ class _LibroIvaVentasPageState extends State<LibroIvaVentasPage> {
                             cae: data['cae']?.toString(),
                             monto: ((data['monto'] as num?)?.toDouble() ?? 0.0)
                                 .abs(),
+                            tipoComprobanteLegal: (data['tipoComprobanteLegal'] as num?)?.toInt(),
+                            puntoVentaLegal: (data['puntoVentaLegal'] as num?)?.toInt(),
+                            nroFacturaLegal: (data['nroFacturaLegal'] as num?)?.toInt(),
+                            socioId: socioIdCuota,
                           ),
                         );
                       }
@@ -197,11 +242,23 @@ class _LibroIvaVentasPageState extends State<LibroIvaVentasPage> {
                       // build() de un StreamBuilder anidado): se difiere al
                       // post-frame para que el botón "Exportar CSV" del
                       // AppBar reaccione una vez que llegan datos reales.
+                      //
+                      // 🐛 Antes comparaba sólo por longitud, lo que no
+                      // detecta que el usuario cambió el rango de fechas
+                      // mientras el callback estaba en cola: se podía
+                      // exportar una lista de un período distinto al que se
+                      // ve en pantalla. Ahora se marca con qué rango se
+                      // calculó y sólo se aplica si ese rango sigue vigente.
+                      final DateTime fechaInicioCalculo = _fechaInicio;
+                      final DateTime fechaFinCalculo = _fechaFin;
                       if (_ultimaListaCargada?.length != lista.length) {
                         WidgetsBinding.instance.addPostFrameCallback((_) {
-                          if (mounted) {
-                            setState(() => _ultimaListaCargada = lista);
+                          if (!mounted) return;
+                          if (_fechaInicio != fechaInicioCalculo ||
+                              _fechaFin != fechaFinCalculo) {
+                            return;
                           }
+                          setState(() => _ultimaListaCargada = lista);
                         });
                       } else {
                         _ultimaListaCargada = lista;
@@ -233,11 +290,21 @@ class _LibroIvaVentasPageState extends State<LibroIvaVentasPage> {
                                           'No hay comprobantes fiscales (con CAE) emitidos en el período seleccionado.',
                                         ),
                                       )
-                                    : SingleChildScrollView(
-                                        scrollDirection: Axis.vertical,
-                                        child: SingleChildScrollView(
-                                          scrollDirection: Axis.horizontal,
-                                          child: DataTable(
+                                    : LayoutBuilder(
+                                        builder: (context, constraints) {
+                                          // 📱 Debajo de este ancho la tabla
+                                          // sólo se veía vía scroll
+                                          // horizontal, con texto diminuto:
+                                          // se reemplaza por una lista de
+                                          // tarjetas apiladas.
+                                          if (constraints.maxWidth < 700) {
+                                            return _buildListaTarjetas(lista);
+                                          }
+                                          return SingleChildScrollView(
+                                            scrollDirection: Axis.vertical,
+                                            child: SingleChildScrollView(
+                                              scrollDirection: Axis.horizontal,
+                                              child: DataTable(
                                             headingRowColor:
                                                 WidgetStateProperty.all(
                                                   const Color(0xFFF1F5F9),
@@ -337,6 +404,8 @@ class _LibroIvaVentasPageState extends State<LibroIvaVentasPage> {
                                             }).toList(),
                                           ),
                                         ),
+                                      );
+                                        },
                                       ),
                               ),
                             ),
@@ -351,6 +420,57 @@ class _LibroIvaVentasPageState extends State<LibroIvaVentasPage> {
           ],
         ),
       ),
+    );
+  }
+
+  // 📱 Vista de tarjetas para pantallas angostas — reemplaza la tabla que
+  // sólo se veía haciendo scroll horizontal con texto diminuto.
+  Widget _buildListaTarjetas(List<_VentaFiscal> lista) {
+    return ListView.separated(
+      itemCount: lista.length,
+      separatorBuilder: (_, __) => const Divider(height: 20),
+      itemBuilder: (context, i) {
+        final v = lista[i];
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    DateFormat('dd/MM/yyyy HH:mm').format(v.fecha),
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey,
+                    ),
+                  ),
+                  Text(
+                    _currencyFormat.format(v.monto),
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                v.concepto,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 4),
+              Wrap(
+                spacing: 12,
+                runSpacing: 4,
+                children: [
+                  Text('Origen: ${v.origen}', style: const TextStyle(fontSize: 12)),
+                  Text('Medio: ${v.medioPago}', style: const TextStyle(fontSize: 12)),
+                  Text('CAE: ${v.cae ?? '-'}', style: const TextStyle(fontSize: 12)),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -451,6 +571,120 @@ class _LibroIvaVentasPageState extends State<LibroIvaVentasPage> {
         ),
       ),
     );
+  }
+
+  // 🧾 EXPORT LIBRO DE IVA DIGITAL (formato ARCA, ex-CITI) — ver
+  // lib/shared/libro_iva_digital_export.dart para la especificación de
+  // campos. Sólo incluye Factura A/B con CAE real; Factura C
+  // (Monotributo) queda afuera porque no discrimina IVA y no forma parte
+  // del Libro de IVA de nadie.
+  Future<void> _exportarLibroIvaDigital(
+    BuildContext context,
+    List<_VentaFiscal> lista,
+  ) async {
+    setState(() => _exportandoLibroIva = true);
+    try {
+      final incluidas = lista.where((v) {
+        final tipo = v.tipoComprobanteLegal;
+        final bool esFiscal = v.cae != null && v.cae != 'NO_FISCAL' && v.cae != 'ERROR_CAE';
+        return esFiscal &&
+            (tipo == 1 || tipo == 6) &&
+            v.puntoVentaLegal != null &&
+            v.nroFacturaLegal != null;
+      }).toList();
+
+      if (incluidas.isEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'No hay comprobantes Factura A/B en este período — el Libro de '
+                'IVA sólo aplica a Responsable Inscripto. Si el club todavía '
+                'factura como Monotributista (Factura C), no corresponde '
+                'generar este archivo.',
+              ),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
+      }
+
+      final double alicuota = await _obtenerAlicuotaConfigurada();
+
+      // Resuelve el DNI del comprador con caché por socioId (varias ventas
+      // pueden repetir el mismo socio en el período).
+      final Map<String, String?> cacheDni = {};
+      Future<String?> dniDe(String? socioId) async {
+        if (socioId == null) return null;
+        if (cacheDni.containsKey(socioId)) return cacheDni[socioId];
+        final snap = await _firestore.collection('socios').doc(socioId).get();
+        String? dni;
+        if (snap.exists) {
+          final data = snap.data();
+          dni = data?['dni']?.toString();
+        }
+        cacheDni[socioId] = dni;
+        return dni;
+      }
+
+      final List<ComprobanteVentaIva> comprobantes = [];
+      for (final v in incluidas) {
+        final double impNeto = v.tipoComprobanteLegal == 11
+            ? v.monto
+            : v.monto / (1 + alicuota / 100);
+        final double impIva = v.monto - impNeto;
+        comprobantes.add(
+          ComprobanteVentaIva(
+            fecha: v.fecha,
+            tipoComprobante: v.tipoComprobanteLegal!,
+            puntoVenta: v.puntoVentaLegal!,
+            numero: v.nroFacturaLegal!,
+            dniComprador: await dniDe(v.socioId),
+            nombreComprador: 'CONSUMIDOR FINAL',
+            total: v.monto,
+            importeNetoGravado: impNeto,
+            importeIva: impIva,
+            alicuotaPorcentaje: alicuota,
+          ),
+        );
+      }
+
+      final String sufijo = DateFormat('yyyy-MM').format(_fechaInicio);
+      descargarCsv('LIBRO_IVA_DIGITAL_VENTAS_CBTE_$sufijo.txt', generarVentasCbte(comprobantes));
+      descargarCsv('LIBRO_IVA_DIGITAL_VENTAS_ALICUOTAS_$sufijo.txt', generarVentasAlicuotas(comprobantes));
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '✅ Generados ${comprobantes.length} comprobante(s) — revisá los campos antes de importarlos al Portal IVA.',
+            ),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No se pudo generar el Libro de IVA: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _exportandoLibroIva = false);
+    }
+  }
+
+  Future<double> _obtenerAlicuotaConfigurada() async {
+    try {
+      final doc = await _firestore
+          .collection('configuraciones_fiscales')
+          .doc('arca_reglas')
+          .get();
+      return (doc.data()?['alicuotaIvaPorcentaje'] as num?)?.toDouble() ?? 21.0;
+    } catch (_) {
+      return 21.0;
+    }
   }
 
   void _exportarCSV(BuildContext context, List<_VentaFiscal> lista) {

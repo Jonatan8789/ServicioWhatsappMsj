@@ -5,6 +5,7 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'socio_model.dart';
 import 'bloque_horario_model.dart';
 
@@ -40,6 +41,7 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
 
   DateTime? _fechaNacimiento;
   DateTime? _vencimientoApto;
+  DateTime? _vencimientoPediculosisMicosis;
 
   Uint8List? _fotoBytes;
   String? _fotoNombre;
@@ -88,6 +90,8 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
 
     _fechaNacimiento = widget.socio.fechaNacimiento;
     _vencimientoApto = widget.socio.vencimientoAptoMedico;
+    _vencimientoPediculosisMicosis =
+        widget.socio.vencimientoPediculosisMicosis;
 
     _deporteSeleccionado = widget.socio.deporte;
     _frecuenciaSeleccionada = widget.socio.frecuencia;
@@ -319,6 +323,9 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
         fechaNacimiento: _fechaNacimiento,
         vencimientoAptoMedico:
             _vencimientoApto ?? DateTime.now().add(const Duration(days: 365)),
+        vencimientoPediculosisMicosis:
+            _vencimientoPediculosisMicosis ??
+            DateTime.now().add(const Duration(days: 182)),
         contactoEmergencia: _contactoEmergenciaController.text.trim(),
         deporte: _deporteSeleccionado ?? 'Socio Natatorio',
         frecuencia: _frecuenciaSeleccionada ?? 'Sin Especificar',
@@ -351,10 +358,7 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(
-                'Datos actualizados, pero ${[
-                  if (fotoFallo) 'la foto',
-                  if (aptoFallo) 'el apto médico',
-                ].join(' y ')} no se pudo subir — se conservó el archivo anterior. Reintentá más tarde.',
+                'Datos actualizados, pero ${[if (fotoFallo) 'la foto', if (aptoFallo) 'el apto médico'].join(' y ')} no se pudo subir — se conservó el archivo anterior. Reintentá más tarde.',
               ),
               backgroundColor: Colors.orange,
             ),
@@ -403,556 +407,576 @@ class _EditarSocioPageState extends State<EditarSocioPage> {
                   onPressed: widget.onVolver,
                 ),
                 const SizedBox(width: 16),
-                Text(
-                  'Modificar Socio: ${widget.socio.nombre}',
-                  style: const TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF0F172A),
+                // 📱 En pantallas angostas el título con el nombre del socio
+                // no entra completo junto al botón de volver: se recorta en
+                // vez de desbordar.
+                Expanded(
+                  child: Text(
+                    'Modificar Socio: ${widget.socio.nombre}',
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF0F172A),
+                    ),
                   ),
                 ),
               ],
             ),
           ),
           Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(40.0),
-              child: Form(
-                key: _formKey,
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      flex: 2,
-                      child: Container(
-                        padding: const EdgeInsets.all(32),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(16),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                // 📱 Por debajo de este ancho los dos paneles del formulario
+                // (datos personales / asignación deportiva) quedan demasiado
+                // angostos lado a lado: se apilan uno debajo del otro dentro
+                // del mismo scroll, sin Expanded (en Column cada panel toma
+                // su altura natural).
+                final bool esMovil = constraints.maxWidth < 700;
+
+                final Widget panelDatosPersonales = Container(
+                  padding: EdgeInsets.all(esMovil ? 20 : 32),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        '1. Datos Personales',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.blueAccent,
                         ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                      ),
+                      const SizedBox(height: 24),
+                      Center(
+                        child: Stack(
                           children: [
-                            const Text(
-                              '1. Datos Personales',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.blueAccent,
-                              ),
-                            ),
-                            const SizedBox(height: 24),
-                            Center(
-                              child: Stack(
-                                children: [
-                                  CircleAvatar(
-                                    radius: 65,
-                                    backgroundColor: Colors.grey.shade200,
-                                    child: _fotoBytes != null
+                            CircleAvatar(
+                              radius: 65,
+                              backgroundColor: Colors.grey.shade200,
+                              child: _fotoBytes != null
+                                  ? ClipRRect(
+                                      borderRadius: BorderRadius.circular(65),
+                                      child: Image.memory(
+                                        _fotoBytes!,
+                                        width: 130,
+                                        height: 130,
+                                        fit: BoxFit.cover,
+                                      ),
+                                    )
+                                  : (widget.socio.fotoUrl.isNotEmpty
                                         ? ClipRRect(
                                             borderRadius: BorderRadius.circular(
                                               65,
                                             ),
-                                            child: Image.memory(
-                                              _fotoBytes!,
+                                            child: CachedNetworkImage(
+                                              imageUrl: widget.socio.fotoUrl,
                                               width: 130,
                                               height: 130,
                                               fit: BoxFit.cover,
+                                              placeholder: (context, url) =>
+                                                  const CircularProgressIndicator(
+                                                    color: Colors.teal,
+                                                  ),
+                                              errorWidget: (_, __, ___) =>
+                                                  const Icon(
+                                                    Icons.person_rounded,
+                                                    size: 60,
+                                                    color: Colors.grey,
+                                                  ),
                                             ),
                                           )
-                                        : (widget.socio.fotoUrl.isNotEmpty
-                                              ? ClipRRect(
-                                                  borderRadius:
-                                                      BorderRadius.circular(65),
-                                                  child: Image.network(
-                                                    widget.socio.fotoUrl,
-                                                    width: 130,
-                                                    height: 130,
-                                                    fit: BoxFit.cover,
-                                                    loadingBuilder:
-                                                        (
-                                                          context,
-                                                          child,
-                                                          progress,
-                                                        ) {
-                                                          if (progress == null)
-                                                            return child;
-                                                          return const CircularProgressIndicator(
-                                                            color: Colors.teal,
-                                                          );
-                                                        },
-                                                    errorBuilder:
-                                                        (
-                                                          _,
-                                                          __,
-                                                          ___,
-                                                        ) => const Icon(
-                                                          Icons.person_rounded,
-                                                          size: 60,
-                                                          color: Colors.grey,
-                                                        ),
-                                                  ),
-                                                )
-                                              : const Icon(
-                                                  Icons.person_rounded,
-                                                  size: 60,
-                                                  color: Colors.grey,
-                                                )),
-                                  ),
-                                  Positioned(
-                                    bottom: 0,
-                                    right: 0,
-                                    child: CircleAvatar(
-                                      backgroundColor: Colors.teal,
-                                      radius: 20,
-                                      child: IconButton(
-                                        icon: const Icon(
-                                          Icons.edit_rounded,
-                                          size: 18,
-                                          color: Colors.white,
-                                        ),
-                                        onPressed: _seleccionarFoto,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
+                                        : const Icon(
+                                            Icons.person_rounded,
+                                            size: 60,
+                                            color: Colors.grey,
+                                          )),
                             ),
-                            if (_fotoNombre != null)
-                              Center(
-                                child: Padding(
-                                  padding: const EdgeInsets.only(top: 8),
-                                  child: Text(
-                                    _fotoNombre!,
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.grey,
-                                    ),
+                            Positioned(
+                              bottom: 0,
+                              right: 0,
+                              child: CircleAvatar(
+                                backgroundColor: Colors.teal,
+                                radius: 20,
+                                child: IconButton(
+                                  icon: const Icon(
+                                    Icons.edit_rounded,
+                                    size: 18,
+                                    color: Colors.white,
                                   ),
+                                  onPressed: _seleccionarFoto,
                                 ),
                               ),
-                            const SizedBox(height: 32),
-
-                            // 🟢 ÚNICO CAMPO OBLIGATORIO
-                            TextFormField(
-                              controller: _nombreController,
-                              decoration: const InputDecoration(
-                                labelText: 'Apellido y Nombre *',
-                                border: OutlineInputBorder(),
-                                prefixIcon: Icon(Icons.badge_rounded),
-                              ),
-                              validator: (v) => v == null || v.trim().isEmpty
-                                  ? 'El Apellido y Nombre es obligatorio'
-                                  : null,
-                            ),
-                            const SizedBox(height: 20),
-
-                            // 🟡 CAMPOS OPCIONALES
-                            TextFormField(
-                              controller: _dniController,
-                              keyboardType: TextInputType.number,
-                              decoration: const InputDecoration(
-                                labelText: 'DNI / Identificación (Opcional)',
-                                border: OutlineInputBorder(),
-                                prefixIcon: Icon(Icons.remember_me_rounded),
-                              ),
-                            ),
-                            const SizedBox(height: 20),
-                            TextFormField(
-                              controller: _telefonoController,
-                              keyboardType: TextInputType.phone,
-                              decoration: const InputDecoration(
-                                labelText: 'Teléfono / WhatsApp (Opcional)',
-                                hintText: 'Ej: 5491112345678',
-                                prefixIcon: Icon(Icons.phone_android_rounded),
-                                border: OutlineInputBorder(),
-                              ),
-                            ),
-                            const SizedBox(height: 20),
-                            TextFormField(
-                              controller: _emailController,
-                              keyboardType: TextInputType.emailAddress,
-                              decoration: const InputDecoration(
-                                labelText: 'Correo Electrónico (Opcional)',
-                                hintText: 'ejemplo@correo.com',
-                                prefixIcon: Icon(Icons.email_rounded),
-                                border: OutlineInputBorder(),
-                              ),
-                            ),
-                            const SizedBox(height: 20),
-                            ListTile(
-                              leading: const Icon(
-                                Icons.cake_rounded,
-                                color: Colors.teal,
-                              ),
-                              title: Text(
-                                _fechaNacimiento == null
-                                    ? 'Fecha de Nacimiento (Opcional)'
-                                    : 'Nacimiento: ${DateFormat('dd/MM/yyyy').format(_fechaNacimiento!)}',
-                              ),
-                              shape: RoundedRectangleBorder(
-                                side: BorderSide(color: Colors.grey.shade300),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              onTap: () async {
-                                final f = await showDatePicker(
-                                  context: context,
-                                  initialDate:
-                                      _fechaNacimiento ?? DateTime(2000),
-                                  firstDate: DateTime(1920),
-                                  lastDate: DateTime.now(),
-                                );
-                                if (f != null) {
-                                  setState(() => _fechaNacimiento = f);
-                                }
-                              },
-                            ),
-                            const SizedBox(height: 40),
-                            const Text(
-                              '2. Área Médica y de Emergencias (Opcional)',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.blueAccent,
-                              ),
-                            ),
-                            const SizedBox(height: 24),
-                            TextFormField(
-                              controller: _contactoEmergenciaController,
-                              decoration: const InputDecoration(
-                                labelText: 'Contacto de Emergencia (Opcional)',
-                                border: OutlineInputBorder(),
-                                prefixIcon: Icon(Icons.heart_broken_rounded),
-                              ),
-                            ),
-                            const SizedBox(height: 20),
-                            Container(
-                              padding: const EdgeInsets.all(16),
-                              decoration: BoxDecoration(
-                                border: Border.all(color: Colors.grey.shade300),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Row(
-                                children: [
-                                  ElevatedButton.icon(
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: Colors.teal.shade700,
-                                      foregroundColor: Colors.white,
-                                    ),
-                                    icon: const Icon(
-                                      Icons.cloud_upload_rounded,
-                                    ),
-                                    label: const Text('Reemplazar Apto Físico'),
-                                    onPressed: _seleccionarApto,
-                                  ),
-                                  const SizedBox(width: 16),
-                                  Expanded(
-                                    child: Text(
-                                      _aptoNombre ??
-                                          (widget.socio.aptoUrl.isNotEmpty
-                                              ? 'Certificado previo cargado'
-                                              : 'Sin archivo'),
-                                      style: TextStyle(
-                                        color:
-                                            (_aptoNombre != null ||
-                                                widget.socio.aptoUrl.isNotEmpty)
-                                            ? Colors.black87
-                                            : Colors.grey,
-                                        fontSize: 13,
-                                        fontWeight: _aptoNombre != null
-                                            ? FontWeight.bold
-                                            : FontWeight.normal,
-                                      ),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                  // 🚨 Antes no había forma de ver el
-                                  // certificado ya cargado sin volver a la
-                                  // ficha del socio.
-                                  if (_aptoNombre == null &&
-                                      widget.socio.aptoUrl.isNotEmpty)
-                                    TextButton.icon(
-                                      onPressed: () => launchUrl(
-                                        Uri.parse(widget.socio.aptoUrl),
-                                        mode: LaunchMode.externalApplication,
-                                      ),
-                                      icon: const Icon(
-                                        Icons.visibility_outlined,
-                                        size: 18,
-                                      ),
-                                      label: const Text('Ver'),
-                                    ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(height: 20),
-                            ListTile(
-                              leading: const Icon(
-                                Icons.verified_user_rounded,
-                                color: Colors.orange,
-                              ),
-                              title: Text(
-                                _vencimientoApto == null
-                                    ? 'Vencimiento del Apto'
-                                    : 'Vence el: ${DateFormat('dd/MM/yyyy').format(_vencimientoApto!)}',
-                              ),
-                              shape: RoundedRectangleBorder(
-                                side: BorderSide(color: Colors.grey.shade300),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              onTap: () async {
-                                final f = await showDatePicker(
-                                  context: context,
-                                  initialDate:
-                                      _vencimientoApto ?? DateTime.now(),
-                                  firstDate: DateTime.now().subtract(
-                                    const Duration(days: 365),
-                                  ),
-                                  lastDate: DateTime.now().add(
-                                    const Duration(days: 730),
-                                  ),
-                                );
-                                if (f != null) {
-                                  setState(() => _vencimientoApto = f);
-                                }
-                              },
                             ),
                           ],
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 40),
+                      if (_fotoNombre != null)
+                        Center(
+                          child: Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: Text(
+                              _fotoNombre!,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ),
+                        ),
+                      const SizedBox(height: 32),
 
-                    Expanded(
-                      flex: 2,
-                      child: Container(
-                        padding: const EdgeInsets.all(32),
+                      // 🟢 ÚNICO CAMPO OBLIGATORIO
+                      TextFormField(
+                        controller: _nombreController,
+                        decoration: const InputDecoration(
+                          labelText: 'Apellido y Nombre *',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.badge_rounded),
+                        ),
+                        validator: (v) => v == null || v.trim().isEmpty
+                            ? 'El Apellido y Nombre es obligatorio'
+                            : null,
+                      ),
+                      const SizedBox(height: 20),
+
+                      // 🟡 CAMPOS OPCIONALES
+                      TextFormField(
+                        controller: _dniController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'DNI / Identificación (Opcional)',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.remember_me_rounded),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      TextFormField(
+                        controller: _telefonoController,
+                        keyboardType: TextInputType.phone,
+                        decoration: const InputDecoration(
+                          labelText: 'Teléfono / WhatsApp (Opcional)',
+                          hintText: 'Ej: 5491112345678',
+                          prefixIcon: Icon(Icons.phone_android_rounded),
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      TextFormField(
+                        controller: _emailController,
+                        keyboardType: TextInputType.emailAddress,
+                        decoration: const InputDecoration(
+                          labelText: 'Correo Electrónico (Opcional)',
+                          hintText: 'ejemplo@correo.com',
+                          prefixIcon: Icon(Icons.email_rounded),
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      ListTile(
+                        leading: const Icon(
+                          Icons.cake_rounded,
+                          color: Colors.teal,
+                        ),
+                        title: Text(
+                          _fechaNacimiento == null
+                              ? 'Fecha de Nacimiento (Opcional)'
+                              : 'Nacimiento: ${DateFormat('dd/MM/yyyy').format(_fechaNacimiento!)}',
+                        ),
+                        shape: RoundedRectangleBorder(
+                          side: BorderSide(color: Colors.grey.shade300),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        onTap: () async {
+                          final f = await showDatePicker(
+                            context: context,
+                            initialDate: _fechaNacimiento ?? DateTime(2000),
+                            firstDate: DateTime(1920),
+                            lastDate: DateTime.now(),
+                          );
+                          if (f != null) {
+                            setState(() => _fechaNacimiento = f);
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 40),
+                      const Text(
+                        '2. Área Médica y de Emergencias (Opcional)',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.blueAccent,
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      TextFormField(
+                        controller: _contactoEmergenciaController,
+                        decoration: const InputDecoration(
+                          labelText: 'Contacto de Emergencia (Opcional)',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.heart_broken_rounded),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      Container(
+                        padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: Colors.grey.shade300),
+                          borderRadius: BorderRadius.circular(8),
                         ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                        child: Row(
                           children: [
-                            const Text(
-                              '3. Asignación Deportiva (Opcional)',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.blueAccent,
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.teal.shade700,
+                                foregroundColor: Colors.white,
                               ),
+                              icon: const Icon(Icons.cloud_upload_rounded),
+                              label: const Text('Reemplazar Apto Físico'),
+                              onPressed: _seleccionarApto,
                             ),
-                            const SizedBox(height: 24),
-                            DropdownButtonFormField<String>(
-                              decoration: const InputDecoration(
-                                labelText: 'Deporte Principal',
-                                border: OutlineInputBorder(),
-                                prefixIcon: Icon(Icons.sports_rounded),
-                              ),
-                              value:
-                                  _opcionesDeportes.contains(
-                                    _deporteSeleccionado,
-                                  )
-                                  ? _deporteSeleccionado
-                                  : null,
-                              items: _opcionesDeportes
-                                  .map(
-                                    (d) => DropdownMenuItem(
-                                      value: d,
-                                      child: Text(d),
-                                    ),
-                                  )
-                                  .toList(),
-                              onChanged: (val) =>
-                                  setState(() => _deporteSeleccionado = val),
-                            ),
-                            const SizedBox(height: 20),
-                            DropdownButtonFormField<String>(
-                              decoration: const InputDecoration(
-                                labelText: 'Frecuencia Semanal',
-                                border: OutlineInputBorder(),
-                                prefixIcon: Icon(Icons.calendar_month_rounded),
-                              ),
-                              value:
-                                  _opcionesFrecuencia.contains(
-                                    _frecuenciaSeleccionada,
-                                  )
-                                  ? _frecuenciaSeleccionada
-                                  : null,
-                              items: _opcionesFrecuencia
-                                  .map(
-                                    (f) => DropdownMenuItem(
-                                      value: f,
-                                      child: Text(f),
-                                    ),
-                                  )
-                                  .toList(),
-                              onChanged: (val) =>
-                                  setState(() => _frecuenciaSeleccionada = val),
-                            ),
-                            const SizedBox(height: 20),
-                            DropdownButtonFormField<String>(
-                              decoration: const InputDecoration(
-                                labelText: 'Bloque Horario',
-                                border: OutlineInputBorder(),
-                                prefixIcon: Icon(
-                                  Icons.access_time_filled_rounded,
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: Text(
+                                _aptoNombre ??
+                                    (widget.socio.aptoUrl.isNotEmpty
+                                        ? 'Certificado previo cargado'
+                                        : 'Sin archivo'),
+                                style: TextStyle(
+                                  color:
+                                      (_aptoNombre != null ||
+                                          widget.socio.aptoUrl.isNotEmpty)
+                                      ? Colors.black87
+                                      : Colors.grey,
+                                  fontSize: 13,
+                                  fontWeight: _aptoNombre != null
+                                      ? FontWeight.bold
+                                      : FontWeight.normal,
                                 ),
-                              ),
-                              value:
-                                  _opcionesHorarios.any(
-                                    (h) => h.id == _bloqueHorarioSeleccionadoId,
-                                  )
-                                  ? _bloqueHorarioSeleccionadoId
-                                  : null,
-                              items: _opcionesHorarios
-                                  .map(
-                                    (h) => DropdownMenuItem(
-                                      value: h.id,
-                                      child: Text(h.etiquetaVisual),
-                                    ),
-                                  )
-                                  .toList(),
-                              onChanged: (val) => setState(
-                                () => _bloqueHorarioSeleccionadoId = val,
+                                overflow: TextOverflow.ellipsis,
                               ),
                             ),
-                            const SizedBox(height: 24),
-                            const Text(
-                              'Días Permitidos:',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 14,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: _diasSemana.map((dia) {
-                                final seleccionado = _diasSeleccionados
-                                    .contains(dia);
-                                return FilterChip(
-                                  label: Text(dia),
-                                  selected: seleccionado,
-                                  selectedColor: Colors.blue.withValues(
-                                    alpha: 0.2,
-                                  ),
-                                  checkmarkColor: Colors.blue,
-                                  onSelected: (bool estado) {
-                                    setState(() {
-                                      if (estado) {
-                                        _diasSeleccionados.add(dia);
-                                      } else {
-                                        _diasSeleccionados.remove(dia);
-                                      }
-                                    });
-                                  },
-                                );
-                              }).toList(),
-                            ),
-
-                            const SizedBox(height: 32),
-                            const Divider(),
-                            const SizedBox(height: 16),
-
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                const Text(
-                                  'Convenio Escolar / Arancel Especial',
-                                  style: TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.blueAccent,
-                                  ),
+                            // 🚨 Antes no había forma de ver el
+                            // certificado ya cargado sin volver a la
+                            // ficha del socio.
+                            if (_aptoNombre == null &&
+                                widget.socio.aptoUrl.isNotEmpty)
+                              TextButton.icon(
+                                onPressed: () => launchUrl(
+                                  Uri.parse(widget.socio.aptoUrl),
+                                  mode: LaunchMode.externalApplication,
                                 ),
-                                Switch(
-                                  value: _esEstudianteEscuela,
-                                  activeColor: Colors.indigo,
-                                  onChanged: (val) => setState(
-                                    () => _esEstudianteEscuela = val,
-                                  ),
+                                icon: const Icon(
+                                  Icons.visibility_outlined,
+                                  size: 18,
                                 ),
-                              ],
-                            ),
-                            if (_esEstudianteEscuela) ...[
-                              const SizedBox(height: 16),
-                              TextFormField(
-                                controller: _colegioController,
-                                decoration: const InputDecoration(
-                                  labelText: 'Escuela / Colegio',
-                                  border: OutlineInputBorder(),
-                                  prefixIcon: Icon(Icons.school_rounded),
-                                ),
+                                label: const Text('Ver'),
                               ),
-                              const SizedBox(height: 16),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: TextFormField(
-                                      controller: _gradoAnioController,
-                                      decoration: const InputDecoration(
-                                        labelText: 'Grado / Año',
-                                        border: OutlineInputBorder(),
-                                        prefixIcon: Icon(Icons.class_outlined),
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 16),
-                                  Expanded(
-                                    child: TextFormField(
-                                      controller:
-                                          _descuentoPorcentajeController,
-                                      keyboardType: TextInputType.number,
-                                      decoration: const InputDecoration(
-                                        labelText: '% Descuento Cuota',
-                                        border: OutlineInputBorder(),
-                                        suffixText: '%',
-                                        prefixIcon: Icon(Icons.percent_rounded),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ],
-
-                            const SizedBox(height: 40),
-                            _guardando
-                                ? const Center(
-                                    child: CircularProgressIndicator(),
-                                  )
-                                : ElevatedButton.icon(
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: const Color(0xFF0F172A),
-                                      foregroundColor: Colors.white,
-                                      padding: const EdgeInsets.symmetric(
-                                        vertical: 20,
-                                      ),
-                                      minimumSize: const Size.fromHeight(50),
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(12),
-                                      ),
-                                    ),
-                                    icon: const Icon(
-                                      Icons.check_circle_rounded,
-                                    ),
-                                    label: const Text(
-                                      'Guardar Cambios',
-                                      style: TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    onPressed: _actualizarSocio,
-                                  ),
                           ],
                         ),
                       ),
-                    ),
-                  ],
-                ),
-              ),
+                      const SizedBox(height: 20),
+                      ListTile(
+                        leading: const Icon(
+                          Icons.verified_user_rounded,
+                          color: Colors.orange,
+                        ),
+                        title: Text(
+                          _vencimientoApto == null
+                              ? 'Vencimiento del Apto'
+                              : 'Vence el: ${DateFormat('dd/MM/yyyy').format(_vencimientoApto!)}',
+                        ),
+                        shape: RoundedRectangleBorder(
+                          side: BorderSide(color: Colors.grey.shade300),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        onTap: () async {
+                          final f = await showDatePicker(
+                            context: context,
+                            initialDate: _vencimientoApto ?? DateTime.now(),
+                            firstDate: DateTime.now().subtract(
+                              const Duration(days: 365),
+                            ),
+                            lastDate: DateTime.now().add(
+                              const Duration(days: 730),
+                            ),
+                          );
+                          if (f != null) {
+                            setState(() => _vencimientoApto = f);
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 10),
+                      ListTile(
+                        leading: const Icon(
+                          Icons.coronavirus_rounded,
+                          color: Colors.deepPurple,
+                        ),
+                        title: Text(
+                          _vencimientoPediculosisMicosis == null
+                              ? 'Vencimiento Revisión Pediculosis/Micosis'
+                              : 'Vence el: ${DateFormat('dd/MM/yyyy').format(_vencimientoPediculosisMicosis!)}',
+                        ),
+                        shape: RoundedRectangleBorder(
+                          side: BorderSide(color: Colors.grey.shade300),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        onTap: () async {
+                          final f = await showDatePicker(
+                            context: context,
+                            initialDate:
+                                _vencimientoPediculosisMicosis ??
+                                DateTime.now(),
+                            firstDate: DateTime.now().subtract(
+                              const Duration(days: 365),
+                            ),
+                            lastDate: DateTime.now().add(
+                              const Duration(days: 730),
+                            ),
+                          );
+                          if (f != null) {
+                            setState(
+                              () => _vencimientoPediculosisMicosis = f,
+                            );
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                );
+
+                final Widget panelDeportivo = Container(
+                  padding: EdgeInsets.all(esMovil ? 20 : 32),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        '3. Asignación Deportiva (Opcional)',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.blueAccent,
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      DropdownButtonFormField<String>(
+                        decoration: const InputDecoration(
+                          labelText: 'Deporte Principal',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.sports_rounded),
+                        ),
+                        value: _opcionesDeportes.contains(_deporteSeleccionado)
+                            ? _deporteSeleccionado
+                            : null,
+                        items: _opcionesDeportes
+                            .map(
+                              (d) => DropdownMenuItem(value: d, child: Text(d)),
+                            )
+                            .toList(),
+                        onChanged: (val) =>
+                            setState(() => _deporteSeleccionado = val),
+                      ),
+                      const SizedBox(height: 20),
+                      DropdownButtonFormField<String>(
+                        decoration: const InputDecoration(
+                          labelText: 'Frecuencia Semanal',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.calendar_month_rounded),
+                        ),
+                        value:
+                            _opcionesFrecuencia.contains(
+                              _frecuenciaSeleccionada,
+                            )
+                            ? _frecuenciaSeleccionada
+                            : null,
+                        items: _opcionesFrecuencia
+                            .map(
+                              (f) => DropdownMenuItem(value: f, child: Text(f)),
+                            )
+                            .toList(),
+                        onChanged: (val) =>
+                            setState(() => _frecuenciaSeleccionada = val),
+                      ),
+                      const SizedBox(height: 20),
+                      DropdownButtonFormField<String>(
+                        decoration: const InputDecoration(
+                          labelText: 'Bloque Horario',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.access_time_filled_rounded),
+                        ),
+                        value:
+                            _opcionesHorarios.any(
+                              (h) => h.id == _bloqueHorarioSeleccionadoId,
+                            )
+                            ? _bloqueHorarioSeleccionadoId
+                            : null,
+                        items: _opcionesHorarios
+                            .map(
+                              (h) => DropdownMenuItem(
+                                value: h.id,
+                                child: Text(h.etiquetaVisual),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (val) =>
+                            setState(() => _bloqueHorarioSeleccionadoId = val),
+                      ),
+                      const SizedBox(height: 24),
+                      const Text(
+                        'Días Permitidos:',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: _diasSemana.map((dia) {
+                          final seleccionado = _diasSeleccionados.contains(dia);
+                          return FilterChip(
+                            label: Text(dia),
+                            selected: seleccionado,
+                            selectedColor: Colors.blue.withValues(alpha: 0.2),
+                            checkmarkColor: Colors.blue,
+                            onSelected: (bool estado) {
+                              setState(() {
+                                if (estado) {
+                                  _diasSeleccionados.add(dia);
+                                } else {
+                                  _diasSeleccionados.remove(dia);
+                                }
+                              });
+                            },
+                          );
+                        }).toList(),
+                      ),
+
+                      const SizedBox(height: 32),
+                      const Divider(),
+                      const SizedBox(height: 16),
+
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Convenio Escolar / Arancel Especial',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.blueAccent,
+                            ),
+                          ),
+                          Switch(
+                            value: _esEstudianteEscuela,
+                            activeColor: Colors.indigo,
+                            onChanged: (val) =>
+                                setState(() => _esEstudianteEscuela = val),
+                          ),
+                        ],
+                      ),
+                      if (_esEstudianteEscuela) ...[
+                        const SizedBox(height: 16),
+                        TextFormField(
+                          controller: _colegioController,
+                          decoration: const InputDecoration(
+                            labelText: 'Escuela / Colegio',
+                            border: OutlineInputBorder(),
+                            prefixIcon: Icon(Icons.school_rounded),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: TextFormField(
+                                controller: _gradoAnioController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Grado / Año',
+                                  border: OutlineInputBorder(),
+                                  prefixIcon: Icon(Icons.class_outlined),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: TextFormField(
+                                controller: _descuentoPorcentajeController,
+                                keyboardType: TextInputType.number,
+                                decoration: const InputDecoration(
+                                  labelText: '% Descuento Cuota',
+                                  border: OutlineInputBorder(),
+                                  suffixText: '%',
+                                  prefixIcon: Icon(Icons.percent_rounded),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+
+                      const SizedBox(height: 40),
+                      _guardando
+                          ? const Center(child: CircularProgressIndicator())
+                          : ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF0F172A),
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 20,
+                                ),
+                                minimumSize: const Size.fromHeight(50),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                              ),
+                              icon: const Icon(Icons.check_circle_rounded),
+                              label: const Text(
+                                'Guardar Cambios',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              onPressed: _actualizarSocio,
+                            ),
+                    ],
+                  ),
+                );
+
+                return SingleChildScrollView(
+                  padding: EdgeInsets.all(esMovil ? 16 : 40),
+                  child: Form(
+                    key: _formKey,
+                    child: esMovil
+                        ? Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              panelDatosPersonales,
+                              const SizedBox(height: 24),
+                              panelDeportivo,
+                            ],
+                          )
+                        : Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(flex: 2, child: panelDatosPersonales),
+                              const SizedBox(width: 40),
+                              Expanded(flex: 2, child: panelDeportivo),
+                            ],
+                          ),
+                  ),
+                );
+              },
             ),
           ),
         ],

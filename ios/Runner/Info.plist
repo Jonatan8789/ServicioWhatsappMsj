@@ -26,6 +26,36 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Usamos el micrófono para cargar puntos del marcador de pádel por voz.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Usamos reconocimiento de voz para interpretar comandos como "punto uno" o "deshacer" en el marcador de pádel.</string>
+	<!-- 🚨 Faltaba por completo: sin esta clave, iOS mata la app apenas
+	     mobile_scanner intenta abrir la cámara (control de acceso, carnet
+	     QR dinámico, etc.) — ni siquiera llega a mostrar un error. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Usamos la cámara para escanear el carnet QR de socios y profesores en el control de acceso.</string>
+	<!-- 🔔 Necesario para que las notificaciones push (FCM) puedan llegar y
+	     procesarse mientras la app está en segundo plano. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
+	<!-- 🔑 Requerido por google_sign_in en iOS: el navegador del login de
+	     Google vuelve a la app a través de esta URL (REVERSED_CLIENT_ID de
+	     GoogleService-Info.plist) — sin esto, el login con Google nunca
+	     completa el regreso a la app. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.1033148419273-r923fv14sk4etq89tv3qelur6ubpkb83</string>
+			</array>
+		</dict>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

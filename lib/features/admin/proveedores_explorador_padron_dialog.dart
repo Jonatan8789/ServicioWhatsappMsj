@@ -92,10 +92,14 @@ class _ProveedoresExploradorPadronDialogState
                 color: const Color(0xFFF1F5F9),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: Row(
+              // 📱 Antes era un Row fijo de 4 Expanded — Wrap deja que cada
+              // filtro baje de renglón cuando el diálogo se angosta.
+              child: Wrap(
+                spacing: 12,
+                runSpacing: 12,
                 children: [
-                  Expanded(
-                    flex: 2,
+                  SizedBox(
+                    width: 260,
                     child: TextField(
                       decoration: const InputDecoration(
                         labelText: 'Buscar por Razón Social, CUIT o Fantasía',
@@ -109,8 +113,8 @@ class _ProveedoresExploradorPadronDialogState
                           setState(() => _busqueda = v.trim().toLowerCase()),
                     ),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
+                  SizedBox(
+                    width: 200,
                     child: DropdownButtonFormField<String>(
                       value: _filtroCondicionIVA,
                       decoration: const InputDecoration(
@@ -136,8 +140,8 @@ class _ProveedoresExploradorPadronDialogState
                           setState(() => _filtroCondicionIVA = v!),
                     ),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
+                  SizedBox(
+                    width: 160,
                     child: DropdownButtonFormField<String>(
                       value: _filtroEstado,
                       decoration: const InputDecoration(
@@ -155,8 +159,8 @@ class _ProveedoresExploradorPadronDialogState
                       onChanged: (v) => setState(() => _filtroEstado = v!),
                     ),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
+                  SizedBox(
+                    width: 200,
                     child: DropdownButtonFormField<String>(
                       value: _filtroProvincia,
                       decoration: const InputDecoration(
@@ -239,7 +243,15 @@ class _ProveedoresExploradorPadronDialogState
                     );
                   }
 
-                  return Scrollbar(
+                  return LayoutBuilder(
+                    builder: (context, constraints) {
+                      // 📱 Debajo de este ancho la tabla de 9 columnas sólo
+                      // se veía vía scroll horizontal: se reemplaza por una
+                      // lista de tarjetas con las mismas acciones.
+                      if (constraints.maxWidth < 700) {
+                        return _buildListaTarjetas(filtrados);
+                      }
+                      return Scrollbar(
                     thumbVisibility: true,
                     child: SingleChildScrollView(
                       scrollDirection: Axis.vertical,
@@ -427,6 +439,8 @@ class _ProveedoresExploradorPadronDialogState
                       ),
                     ),
                   );
+                    },
+                  );
                 },
               ),
             ),
@@ -439,6 +453,112 @@ class _ProveedoresExploradorPadronDialogState
           child: const Text('Cerrar'),
         ),
       ],
+    );
+  }
+
+  // 📱 Vista de tarjetas para pantallas angostas — reemplaza la tabla de 9
+  // columnas que sólo se veía vía scroll horizontal, con las mismas
+  // acciones (editar / activar-inactivar) que la fila de la tabla.
+  Widget _buildListaTarjetas(List<QueryDocumentSnapshot> filtrados) {
+    return ListView.separated(
+      itemCount: filtrados.length,
+      separatorBuilder: (_, __) => const Divider(height: 20),
+      itemBuilder: (context, i) {
+        final doc = filtrados[i];
+        final data = doc.data() as Map<String, dynamic>;
+        final String id = doc.id;
+        final bool esActivo = data['activo'] ?? true;
+
+        return Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: esActivo ? null : Colors.red.shade50,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Chip(
+                    label: Text(
+                      esActivo ? 'ACTIVO' : 'INACTIVO',
+                      style: TextStyle(
+                        color: esActivo
+                            ? Colors.green.shade900
+                            : Colors.red.shade900,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 10,
+                      ),
+                    ),
+                    backgroundColor: esActivo
+                        ? Colors.green.shade100
+                        : Colors.red.shade100,
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.edit_rounded, color: Colors.blue),
+                    tooltip: 'Editar Proveedor',
+                    onPressed: () {
+                      showDialog(
+                        context: context,
+                        builder: (context) => ProveedoresAbmDialog(
+                          proveedorExistente: data,
+                          proveedorId: id,
+                        ),
+                      );
+                    },
+                  ),
+                  IconButton(
+                    icon: Icon(
+                      esActivo ? Icons.block_rounded : Icons.check_circle_rounded,
+                      color: esActivo ? Colors.orange.shade800 : Colors.green,
+                    ),
+                    tooltip: esActivo
+                        ? 'Inactivar Proveedor'
+                        : 'Reactivar Proveedor',
+                    onPressed: () => _toggleEstadoProveedor(id, esActivo),
+                  ),
+                ],
+              ),
+              Text(
+                data['razonSocial'] ?? '-',
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+              ),
+              if ((data['nombreFantasia'] ?? '').toString().isNotEmpty)
+                Text(
+                  data['nombreFantasia'],
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 12,
+                runSpacing: 4,
+                children: [
+                  Text('CUIT: ${data['cuit'] ?? '-'}', style: const TextStyle(fontSize: 12)),
+                  Text(
+                    '${data['condicionIVA'] ?? '-'} • ${data['jurisdiccionIIBB'] ?? '-'}',
+                    style: const TextStyle(fontSize: 12, color: Colors.teal),
+                  ),
+                  Text(
+                    '${data['provincia'] ?? ''} - ${data['localidad'] ?? ''}',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  Text(
+                    '${data['diasVencimientoFactura'] ?? 30}d crédito',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  Text(
+                    data['telefono'] ?? data['email'] ?? '-',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 

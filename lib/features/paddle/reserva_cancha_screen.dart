@@ -1,9 +1,9 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:http/http.dart' as http;
+import 'package:cloud_functions/cloud_functions.dart';
 import 'reserva_cancha_model.dart';
+import 'reserva_cancha_repository.dart';
 
 class ReservaCanchaScreen extends StatefulWidget {
   const ReservaCanchaScreen({super.key});
@@ -34,11 +34,33 @@ class _ReservaCanchaScreenState extends State<ReservaCanchaScreen> {
 
   List<String> _canchasActivas = [];
   Map<String, dynamic>? _datosSocio;
+  String? _socioDocId;
+
+  // 🚨 Antes el stream se armaba de nuevo (nueva instancia de Stream) en
+  // CADA build(), incluyendo los que dispara elegir una cancha u horario —
+  // StreamBuilder detecta el cambio de identidad del stream y cancela/
+  // resuscribe el listener de Firestore aunque la consulta real (mismo día)
+  // no haya cambiado. Ahora se cachea y sólo se reconstruye cuando cambia
+  // la fecha seleccionada.
+  late Stream<QuerySnapshot> _reservasDelDiaStream;
 
   @override
   void initState() {
     super.initState();
+    _reservasDelDiaStream = _streamReservasDelDia(_fechaSeleccionada);
     _cargarAjustesGlobales();
+  }
+
+  Stream<QuerySnapshot> _streamReservasDelDia(DateTime fecha) {
+    final inicioDia = DateTime(fecha.year, fecha.month, fecha.day);
+    return _firestore
+        .collection('reservas_canchas')
+        .where('fecha', isGreaterThanOrEqualTo: Timestamp.fromDate(inicioDia))
+        .where(
+          'fecha',
+          isLessThan: Timestamp.fromDate(inicioDia.add(const Duration(days: 1))),
+        )
+        .snapshots();
   }
 
   Future<void> _cargarAjustesGlobales() async {
@@ -46,11 +68,24 @@ class _ReservaCanchaScreenState extends State<ReservaCanchaScreen> {
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user != null) {
-        final docSocio = await _firestore
+        // 🚨 El id del documento 'socios/{id}' NO es el uid de Auth — son
+        // altas migradas/creadas por el admin con id propio, vinculadas
+        // recién después vía el campo 'usuarioUid'. Buscar por
+        // .doc(user.uid) directo nunca encontraba el documento real de un
+        // socio migrado, dejaba _datosSocio null (nombre quedaba "Socio
+        // Mobile") y, peor, socioId se guardaba como el uid de Auth: la
+        // regla de creación de 'reservas_canchas' busca
+        // socios/{socioId}.usuarioUid, así que con el uid de Auth ahí
+        // jamás matcheaba y el alta se rechazaba por permisos.
+        final querySocio = await _firestore
             .collection('socios')
-            .doc(user.uid)
+            .where('usuarioUid', isEqualTo: user.uid)
+            .limit(1)
             .get();
-        if (docSocio.exists) _datosSocio = docSocio.data();
+        if (querySocio.docs.isNotEmpty) {
+          _socioDocId = querySocio.docs.first.id;
+          _datosSocio = querySocio.docs.first.data();
+        }
       }
 
       final docAjustes = await _firestore
@@ -117,6 +152,13 @@ class _ReservaCanchaScreenState extends State<ReservaCanchaScreen> {
       _snack('Seleccioná cancha y horario.', Colors.orange);
       return;
     }
+    if (_socioDocId == null) {
+      _snack(
+        'No encontramos tu ficha de socio. Contactá a administración.',
+        Colors.red,
+      );
+      return;
+    }
 
     setState(() => _cargando = true);
 
@@ -135,7 +177,7 @@ class _ReservaCanchaScreenState extends State<ReservaCanchaScreen> {
       id: reservaId,
       cancha: _canchaSeleccionada!,
       nombreCliente: nombreSocio,
-      socioId: FirebaseAuth.instance.currentUser?.uid,
+      socioId: _socioDocId,
       fecha: _fechaSeleccionada,
       horaInicio: _horaInicioSeleccionada!,
       duracionHoras: _duracionHoras,
@@ -144,30 +186,17 @@ class _ReservaCanchaScreenState extends State<ReservaCanchaScreen> {
     );
 
     try {
-      final snapshot = await _firestore.collection('reservas_canchas').get();
-      for (var doc in snapshot.docs) {
-        final r = ReservaCanchaModel.fromFirestore(doc.id, doc.data());
-        final fId = "${r.fecha.year}-${r.fecha.month}-${r.fecha.day}";
-        if (fId == fechaIdStr && r.cancha == _canchaSeleccionada!) {
-          int rInicio = r.horaInicio;
-          int rFin = rInicio + r.duracionHoras;
-          for (
-            int h = _horaInicioSeleccionada!;
-            h < _horaInicioSeleccionada! + _duracionHoras;
-            h++
-          ) {
-            if (h >= rInicio && h < rFin) {
-              _snack('¡El horario ya fue reservado!', Colors.red);
-              return;
-            }
-          }
-        }
+      // 🚨 Antes chequeaba solapamiento con un `get()` y recién después
+      // escribía la reserva aparte (TOCTOU) — ver reserva_cancha_repository.dart.
+      try {
+        await reservarCanchaAtomica(
+          firestore: _firestore,
+          reserva: nuevaReserva,
+        );
+      } on HorarioOcupadoException {
+        _snack('¡El horario ya fue reservado!', Colors.red);
+        return;
       }
-
-      await _firestore
-          .collection('reservas_canchas')
-          .doc(reservaId)
-          .set(nuevaReserva.toFirestore());
 
       if (FirebaseAuth.instance.currentUser != null) {
         await _firestore.collection('ventas_pendientes').add({
@@ -211,7 +240,12 @@ class _ReservaCanchaScreenState extends State<ReservaCanchaScreen> {
     }
   }
 
-  /// OPCIÓN B: Disparo directo por HTTP a Render con formato oficial
+  /// 🚨 Antes disparaba el HTTP directo a Render, que exige un ID token de
+  /// admin — un socio nunca lo tiene, así que esta confirmación fallaba
+  /// siempre en silencio (401). Ahora pasa por la Cloud Function
+  /// 'notificarWhatsappSocio', que valida que quien llama es un socio real
+  /// y manda el mensaje a SU PROPIO teléfono ya registrado (nunca a uno
+  /// arbitrario), "prestando" un token de admin del lado del servidor.
   Future<void> _enviarConfirmacionReserva({
     required String telefono,
     required String nombreSocio,
@@ -220,16 +254,6 @@ class _ReservaCanchaScreenState extends State<ReservaCanchaScreen> {
     required int horaInicio,
     required int duracion,
   }) async {
-    String limpio = telefono.replaceAll(RegExp(r'\D'), '');
-    if (limpio.isEmpty) return;
-    if (limpio.startsWith('0')) limpio = limpio.substring(1);
-    if (limpio.startsWith('15')) limpio = limpio.substring(2);
-    if (!limpio.startsWith('54')) {
-      limpio = '549$limpio';
-    } else if (!limpio.startsWith('549')) {
-      limpio = '549${limpio.substring(2)}';
-    }
-
     final String fechaFormateada =
         "${fecha.day.toString().padLeft(2, '0')}/${fecha.month.toString().padLeft(2, '0')}/${fecha.year}";
     final String horaInicioStr = "${horaInicio.toString().padLeft(2, '0')}:00";
@@ -250,13 +274,18 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
 ''';
 
     try {
-      await http.post(
-        Uri.parse('https://servicio-whatsapp-oqua.onrender.com/send-whatsapp'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'phone': limpio, 'message': mensaje}),
+      final callable = FirebaseFunctions.instance.httpsCallable(
+        'notificarWhatsappSocio',
       );
+      final resp = await callable.call({
+        'tipo': 'notificar_propio',
+        'mensaje': mensaje,
+      });
+      if (resp.data['success'] != true) {
+        debugPrint('⚠️ WhatsApp no enviado: ${resp.data['error']}');
+      }
     } catch (e) {
-      debugPrint('⚠️ Error al enviar mensaje por WhatsApp vía Render: $e');
+      debugPrint('⚠️ Error al enviar mensaje por WhatsApp: $e');
     }
   }
 
@@ -264,6 +293,145 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(msg), backgroundColor: color));
+  }
+
+  static const List<String> _nombresDias = [
+    'Lunes',
+    'Martes',
+    'Miércoles',
+    'Jueves',
+    'Viernes',
+    'Sábado',
+    'Domingo',
+  ];
+
+  // 🔁 TURNO FIJO SEMANAL: muestra el turno fijo activo del socio (si
+  // tiene uno) con opción de cancelarlo, y reusa la cancha/horario/fecha
+  // ya elegidos arriba para armar uno nuevo — no hace falta un formulario
+  // aparte, la fecha elegida define el día de la semana que se repite.
+  Widget _buildTurnoFijoActivo() {
+    return StreamBuilder<QuerySnapshot>(
+      stream: _firestore
+          .collection('turnos_recurrentes_canchas')
+          .where('socioId', isEqualTo: _socioDocId)
+          .where('activo', isEqualTo: true)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+          return const SizedBox.shrink();
+        }
+        final doc = snapshot.data!.docs.first;
+        final data = doc.data() as Map<String, dynamic>;
+        final String dia =
+            _nombresDias[((data['diaSemana'] as num?)?.toInt() ?? 1) - 1];
+        return Container(
+          width: double.infinity,
+          color: Colors.indigo.shade50,
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              const Icon(Icons.event_repeat_rounded, color: Colors.indigo),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Turno fijo: $dia ${data['horaInicio']}:00hs - ${data['cancha']}',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+              TextButton(
+                onPressed: () => _cancelarTurnoFijo(doc.id),
+                child: const Text('Cancelar'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _cancelarTurnoFijo(String turnoId) async {
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('¿Cancelar turno fijo?'),
+        content: const Text(
+          'Se van a liberar las semanas futuras que todavía no pasaron.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('No'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Sí, cancelar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmar != true || !mounted) return;
+    try {
+      await FirebaseFunctions.instance
+          .httpsCallable('cancelarTurnoRecurrenteCancha')
+          .call({'turnoId': turnoId});
+      if (mounted) _snack('Turno fijo cancelado.', Colors.orange);
+    } catch (e) {
+      if (mounted) _snack('No se pudo cancelar: $e', Colors.red);
+    }
+  }
+
+  Future<void> _hacerTurnoFijo() async {
+    if (_canchaSeleccionada == null || _horaInicioSeleccionada == null) {
+      _snack('Elegí cancha y horario primero.', Colors.orange);
+      return;
+    }
+    final String dia = _nombresDias[_fechaSeleccionada.weekday - 1];
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('¿Hacer turno fijo?'),
+        content: Text(
+          'Vas a reservar todos los $dia a las $_horaInicioSeleccionada:00hs '
+          'en $_canchaSeleccionada, automáticamente, hasta que lo canceles.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Confirmar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmar != true || !mounted) return;
+
+    setState(() => _cargando = true);
+    try {
+      final resp = await FirebaseFunctions.instance
+          .httpsCallable('crearTurnoRecurrenteCanchaSocio')
+          .call({
+            'cancha': _canchaSeleccionada,
+            'diaSemana': _fechaSeleccionada.weekday,
+            'horaInicio': _horaInicioSeleccionada,
+            'duracionHoras': _duracionHoras,
+          });
+      if (!mounted) return;
+      if (resp.data['success'] == true) {
+        _snack('¡Turno fijo creado!', Colors.green);
+      } else {
+        _snack(
+          resp.data['error'] ?? 'No se pudo crear el turno fijo.',
+          Colors.red,
+        );
+      }
+    } catch (e) {
+      if (mounted) _snack('Error: $e', Colors.red);
+    } finally {
+      if (mounted) setState(() => _cargando = false);
+    }
   }
 
   @override
@@ -281,6 +449,7 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
           ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
+                if (_socioDocId != null) _buildTurnoFijoActivo(),
                 Container(
                   padding: const EdgeInsets.all(16),
                   color: Colors.white,
@@ -326,6 +495,9 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
                                 setState(() {
                                   _fechaSeleccionada = picked;
                                   _horaInicioSeleccionada = null;
+                                  _reservasDelDiaStream = _streamReservasDelDia(
+                                    picked,
+                                  );
                                 });
                               }
                             },
@@ -337,9 +509,7 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
                 ),
                 Expanded(
                   child: StreamBuilder<QuerySnapshot>(
-                    stream: _firestore
-                        .collection('reservas_canchas')
-                        .snapshots(),
+                    stream: _reservasDelDiaStream,
                     builder: (context, snapshot) {
                       if (!snapshot.hasData) {
                         return const Center(child: CircularProgressIndicator());
@@ -468,6 +638,20 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
                               ? null
                               : _confirmarReserva,
                           child: const Text('Confirmar Reserva'),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          icon: const Icon(
+                            Icons.event_repeat_rounded,
+                            size: 18,
+                          ),
+                          label: const Text('Hacer turno fijo semanal'),
+                          onPressed: _horaInicioSeleccionada == null
+                              ? null
+                              : _hacerTurnoFijo,
                         ),
                       ),
                     ],

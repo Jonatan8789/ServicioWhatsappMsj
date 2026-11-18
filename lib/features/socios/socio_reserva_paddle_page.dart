@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import '../paddle/reserva_cancha_model.dart';
+import '../paddle/reserva_cancha_repository.dart';
 
 class SocioReservaPaddlePage extends StatefulWidget {
   final String socioId;
@@ -30,6 +31,25 @@ class _SocioReservaPaddlePageState extends State<SocioReservaPaddlePage> {
   int _horaApertura = 8;
   int _horaCierre = 23;
 
+  // 🚨 Antes el stream se armaba de nuevo en cada build() (p.ej. al tocar un
+  // horario o la paleta/pelotas), así que StreamBuilder cancelaba y
+  // resuscribía el listener de Firestore aunque el día consultado no
+  // cambiara. Ahora se cachea y sólo se reconstruye cuando cambia la fecha.
+  late Stream<QuerySnapshot> _reservasDelDiaStream =
+      _streamReservasDelDia(_fechaSeleccionada);
+
+  Stream<QuerySnapshot> _streamReservasDelDia(DateTime fecha) {
+    final inicioDia = DateTime(fecha.year, fecha.month, fecha.day);
+    return _firestore
+        .collection('reservas_canchas')
+        .where('fecha', isGreaterThanOrEqualTo: Timestamp.fromDate(inicioDia))
+        .where(
+          'fecha',
+          isLessThan: Timestamp.fromDate(inicioDia.add(const Duration(days: 1))),
+        )
+        .snapshots();
+  }
+
   Future<void> _confirmarReservaSocio() async {
     if (_canchaSeleccionada == null || _horaInicioSeleccionada == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -54,30 +74,6 @@ class _SocioReservaPaddlePageState extends State<SocioReservaPaddlePage> {
         "${fechaIdStr}_${canchaLimpia}_${_horaInicioSeleccionada}hs_duracion1h";
 
     try {
-      final snapshotCanchas = await _firestore
-          .collection('reservas_canchas')
-          .get();
-      for (var doc in snapshotCanchas.docs) {
-        final r = ReservaCanchaModel.fromFirestore(doc.id, doc.data());
-        final String fId = "${r.fecha.year}-${r.fecha.month}-${r.fecha.day}";
-        if (fId == fechaIdStr &&
-            r.cancha == _canchaSeleccionada &&
-            _horaInicioSeleccionada! >= r.horaInicio &&
-            _horaInicioSeleccionada! < r.horaInicio + r.duracionHoras) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text(
-                  'Ese horario ya fue reservado. Elegí otro turno.',
-                ),
-                backgroundColor: Colors.red,
-              ),
-            );
-          }
-          return;
-        }
-      }
-
       final nuevaReserva = ReservaCanchaModel(
         id: reservaId,
         cancha: _canchaSeleccionada!,
@@ -93,10 +89,25 @@ class _SocioReservaPaddlePageState extends State<SocioReservaPaddlePage> {
         metodoPago: 'Cuenta Corriente',
       );
 
-      await _firestore
-          .collection('reservas_canchas')
-          .doc(reservaId)
-          .set({...nuevaReserva.toFirestore(), 'origen': 'Portal Socio'});
+      // 🚨 Antes chequeaba solapamiento con un `get()` y recién después
+      // escribía la reserva aparte (TOCTOU) — ver reserva_cancha_repository.dart.
+      try {
+        await reservarCanchaAtomica(
+          firestore: _firestore,
+          reserva: nuevaReserva,
+          datosExtra: const {'origen': 'Portal Socio'},
+        );
+      } on HorarioOcupadoException {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Ese horario ya fue reservado. Elegí otro turno.'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -158,8 +169,12 @@ class _SocioReservaPaddlePageState extends State<SocioReservaPaddlePage> {
                     firstDate: DateTime.now(),
                     lastDate: DateTime.now().add(const Duration(days: 15)),
                   );
-                  if (picked != null)
-                    setState(() => _fechaSeleccionada = picked);
+                  if (picked != null) {
+                    setState(() {
+                      _fechaSeleccionada = picked;
+                      _reservasDelDiaStream = _streamReservasDelDia(picked);
+                    });
+                  }
                 },
               ),
             ),
@@ -212,7 +227,7 @@ class _SocioReservaPaddlePageState extends State<SocioReservaPaddlePage> {
 
             // GRILLA DE HORARIOS DINÁMICA
             StreamBuilder<QuerySnapshot>(
-              stream: _firestore.collection('reservas_canchas').snapshots(),
+              stream: _reservasDelDiaStream,
               builder: (context, snapshot) {
                 if (!snapshot.hasData)
                   return const Center(child: CircularProgressIndicator());

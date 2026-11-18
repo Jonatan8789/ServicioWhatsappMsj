@@ -21,7 +21,14 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.natatorio_app"
+        // 🏷️ Identificador definitivo para publicar en Google Play — antes
+        // era el placeholder "com.example.natatorio_app" que generó
+        // `flutter create`. El namespace (abajo, paquete de Kotlin/R.java)
+        // se deja igual a propósito: Android permite que applicationId y
+        // namespace difieran sin ningún problema, así se evita mover
+        // MainActivity.kt de carpeta. Se registró una app nueva en Firebase
+        // para este applicationId (google-services.json ya incluye ambas).
+        applicationId = "com.oqua.clubdeportivo"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode

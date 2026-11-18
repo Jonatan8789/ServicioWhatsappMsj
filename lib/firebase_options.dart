@@ -58,7 +58,7 @@ class DefaultFirebaseOptions {
 
   static const FirebaseOptions android = FirebaseOptions(
     apiKey: 'AIzaSyDBUSyxjqAneqRIX9txo_9MWQIA9h6PEaY',
-    appId: '1:1033148419273:android:1af25f48b8449352771118',
+    appId: '1:1033148419273:android:1ebb6e5082e464db771118',
     messagingSenderId: '1033148419273',
     projectId: 'oqua-235c1',
     storageBucket: 'oqua-235c1.firebasestorage.app',
@@ -66,10 +66,10 @@ class DefaultFirebaseOptions {
 
   static const FirebaseOptions ios = FirebaseOptions(
     apiKey: 'AIzaSyAkc6UHdC6I1VqNaTzoa8_4CokmfnmLjIw',
-    appId: '1:1033148419273:ios:d542f9c898a73835771118',
+    appId: '1:1033148419273:ios:15ef11049ef7ad23771118',
     messagingSenderId: '1033148419273',
     projectId: 'oqua-235c1',
     storageBucket: 'oqua-235c1.firebasestorage.app',
-    iosBundleId: 'com.example.natatorioApp',
+    iosBundleId: 'com.oqua.clubdeportivo',
   );
 }

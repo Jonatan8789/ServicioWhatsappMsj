@@ -1,20 +1,69 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import '../auth/auth_services.dart';
+import '../../services/auditoria_service.dart';
 
 class UsuariosPage extends StatelessWidget {
   const UsuariosPage({super.key});
+
+  // 💸 Sincroniza rol/activo de todos los usuarios existentes a Custom
+  // Claims del ID token — de ahí en más, las Reglas de Seguridad y las
+  // Cloud Functions verifican permisos sin leer Firestore. Sólo hace falta
+  // correrlo una vez (los cambios de rol nuevos se sincronizan solos);
+  // volver a correrlo no rompe nada, es idempotente.
+  Future<void> _sincronizarPermisos(BuildContext context) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+    try {
+      final resp = await FirebaseFunctions.instance
+          .httpsCallable('backfillCustomClaims')
+          .call();
+      if (context.mounted) Navigator.pop(context);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '✅ Permisos sincronizados: ${resp.data['sincronizados']}/${resp.data['total']} usuarios.',
+            ),
+            backgroundColor: Colors.teal,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) Navigator.pop(context);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('❌ Error: $e'), backgroundColor: Colors.redAccent),
+        );
+      }
+    }
+  }
 
   // Función para actualizar el rol en la base de datos
   Future<void> _cambiarRol(
     BuildContext context,
     String uid,
+    String email,
+    String rolAnterior,
     String nuevoRol,
   ) async {
     try {
       await FirebaseFirestore.instance.collection('usuarios').doc(uid).update({
         'rol': nuevoRol,
       });
+      // 📋 Cambiar el rol de un usuario es una de las operaciones más
+      // sensibles del sistema (puede otorgar o quitar acceso a caja, POS,
+      // config fiscal) — antes no quedaba ningún registro de quién lo hizo.
+      await registrarAuditoria(
+        accion: 'cambiar_rol_usuario',
+        entidad: 'usuarios',
+        entidadId: uid,
+        detalle: {'email': email, 'rolAnterior': rolAnterior, 'rolNuevo': nuevoRol},
+      );
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -39,12 +88,19 @@ class UsuariosPage extends StatelessWidget {
   Future<void> _cambiarEstadoActivo(
     BuildContext context,
     String uid,
+    String email,
     bool nuevoEstado,
   ) async {
     try {
       await FirebaseFirestore.instance.collection('usuarios').doc(uid).update({
         'activo': nuevoEstado,
       });
+      await registrarAuditoria(
+        accion: nuevoEstado ? 'habilitar_usuario' : 'deshabilitar_usuario',
+        entidad: 'usuarios',
+        entidadId: uid,
+        detalle: {'email': email},
+      );
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -101,13 +157,23 @@ class UsuariosPage extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Administración de Usuarios',
-            style: TextStyle(
-              fontSize: 32,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFF0F172A),
-            ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Administración de Usuarios',
+                style: TextStyle(
+                  fontSize: 32,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF0F172A),
+                ),
+              ),
+              OutlinedButton.icon(
+                onPressed: () => _sincronizarPermisos(context),
+                icon: const Icon(Icons.sync_rounded, size: 18),
+                label: const Text('Sincronizar Permisos (1 vez)'),
+              ),
+            ],
           ),
           const Text(
             'Gestiona los perfiles, permisos, contraseñas y estados de acceso al sistema.',
@@ -208,6 +274,7 @@ class UsuariosPage extends StatelessWidget {
                                   _cambiarEstadoActivo(
                                     context,
                                     uid,
+                                    email,
                                     nuevoValor,
                                   );
                                 },
@@ -234,7 +301,13 @@ class UsuariosPage extends StatelessWidget {
                                   ? (String? nuevoValor) {
                                       if (nuevoValor != null &&
                                           nuevoValor != rolActual) {
-                                        _cambiarRol(context, uid, nuevoValor);
+                                        _cambiarRol(
+                                          context,
+                                          uid,
+                                          email,
+                                          rolActual,
+                                          nuevoValor,
+                                        );
                                       }
                                     }
                                   : null, // Se deshabilita el menú si el usuario está apagado
@@ -242,6 +315,10 @@ class UsuariosPage extends StatelessWidget {
                                 DropdownMenuItem(
                                   value: 'admin',
                                   child: Text('Admin'),
+                                ),
+                                DropdownMenuItem(
+                                  value: 'cajero',
+                                  child: Text('Cajero'),
                                 ),
                                 DropdownMenuItem(
                                   value: 'profe',

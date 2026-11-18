@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:intl/intl.dart';
+import '../../shared/fila_responsiva.dart';
 
 // Modelo auxiliar para el desglose dinámico de percepciones de IIBB
 class ItemPercepcionIIBB {
@@ -115,165 +116,134 @@ class _NuevaFacturaCompraDialogState extends State<NuevaFacturaCompraDialog> {
 
                 // 2️⃣ DATOS DE COMPROBANTE Y FECHAS
                 _seccionTitulo('2. Datos del Comprobante & Fechas'),
-                Row(
-                  children: [
-                    Expanded(
-                      flex: 2,
-                      child: DropdownButtonFormField<String>(
-                        value: _tipoComprobante,
-                        decoration: const InputDecoration(
-                          labelText: 'Tipo Comprobante',
-                          isDense: true,
-                        ),
-                        items:
-                            [
-                                  'Factura A',
-                                  'Factura B',
-                                  'Factura C',
-                                  'Ticket X',
-                                  'Interno',
-                                ]
-                                .map(
-                                  (e) => DropdownMenuItem(
-                                    value: e,
-                                    child: Text(e),
-                                  ),
-                                )
-                                .toList(),
-                        onChanged: (v) => setState(() => _tipoComprobante = v!),
+                filaResponsiva(
+                  flexes: const [2, 3],
+                  [
+                    DropdownButtonFormField<String>(
+                      value: _tipoComprobante,
+                      decoration: const InputDecoration(
+                        labelText: 'Tipo Comprobante',
+                        isDense: true,
                       ),
+                      items:
+                          [
+                                'Factura A',
+                                'Factura B',
+                                'Factura C',
+                                'Ticket X',
+                                'Interno',
+                              ]
+                              .map(
+                                (e) =>
+                                    DropdownMenuItem(value: e, child: Text(e)),
+                              )
+                              .toList(),
+                      onChanged: (v) => setState(() => _tipoComprobante = v!),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      flex: 3,
-                      child: TextFormField(
-                        decoration: const InputDecoration(
-                          labelText: 'N° Comprobante (Ej: 0001-00001234)',
-                          isDense: true,
-                        ),
-                        validator: (v) => v!.isEmpty
-                            ? 'Ingrese el número del comprobante'
-                            : null,
-                        onChanged: (v) => _numeroComprobante = v,
+                    TextFormField(
+                      decoration: const InputDecoration(
+                        labelText: 'N° Comprobante (Ej: 0001-00001234)',
+                        isDense: true,
                       ),
+                      validator: (v) =>
+                          v!.isEmpty ? 'Ingrese el número del comprobante' : null,
+                      onChanged: (v) => _numeroComprobante = v,
                     ),
                   ],
                 ),
                 const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        icon: const Icon(
-                          Icons.calendar_today_rounded,
-                          size: 18,
-                        ),
-                        label: Text(
-                          'Emisión: ${DateFormat('dd/MM/yyyy').format(_fechaEmision)}',
-                        ),
-                        onPressed: () async {
-                          final picked = await showDatePicker(
-                            context: context,
-                            initialDate: _fechaEmision,
-                            firstDate: DateTime(2020),
-                            lastDate: DateTime(2030),
-                          );
-                          if (picked != null) {
-                            setState(() {
-                              _fechaEmision = picked;
-                              final int dias =
-                                  (_proveedorData?['diasVencimientoFactura']
-                                          as num?)
-                                      ?.toInt() ??
-                                  30;
-                              _fechaVencimiento = picked.add(
-                                Duration(days: dias),
-                              );
-                            });
-                          }
-                        },
-                      ),
+                filaResponsiva([
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.calendar_today_rounded, size: 18),
+                    label: Text(
+                      'Emisión: ${DateFormat('dd/MM/yyyy').format(_fechaEmision)}',
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        icon: const Icon(
-                          Icons.event_available_rounded,
-                          size: 18,
-                          color: Colors.orange,
-                        ),
-                        label: Text(
-                          'Vencimiento: ${DateFormat('dd/MM/yyyy').format(_fechaVencimiento)}',
-                        ),
-                        onPressed: () async {
-                          final picked = await showDatePicker(
-                            context: context,
-                            initialDate: _fechaVencimiento,
-                            firstDate: DateTime(2020),
-                            lastDate: DateTime(2030),
-                          );
-                          if (picked != null)
-                            setState(() => _fechaVencimiento = picked);
-                        },
-                      ),
+                    onPressed: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: _fechaEmision,
+                        firstDate: DateTime(2020),
+                        lastDate: DateTime(2030),
+                      );
+                      if (picked != null) {
+                        setState(() {
+                          _fechaEmision = picked;
+                          final int dias =
+                              (_proveedorData?['diasVencimientoFactura']
+                                      as num?)
+                                  ?.toInt() ??
+                              30;
+                          _fechaVencimiento = picked.add(Duration(days: dias));
+                        });
+                      }
+                    },
+                  ),
+                  OutlinedButton.icon(
+                    icon: const Icon(
+                      Icons.event_available_rounded,
+                      size: 18,
+                      color: Colors.orange,
                     ),
-                  ],
-                ),
+                    label: Text(
+                      'Vencimiento: ${DateFormat('dd/MM/yyyy').format(_fechaVencimiento)}',
+                    ),
+                    onPressed: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: _fechaVencimiento,
+                        firstDate: DateTime(2020),
+                        lastDate: DateTime(2030),
+                      );
+                      if (picked != null) {
+                        setState(() => _fechaVencimiento = picked);
+                      }
+                    },
+                  ),
+                ]),
                 const SizedBox(height: 20),
 
                 // 3️⃣ DESGLOSE BASES IMPONIBLES E IVA
                 _seccionTitulo(
                   '3. Desglose de Base Imponible e IVA (Libro Compras)',
                 ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextFormField(
-                        keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true,
-                        ),
-                        decoration: const InputDecoration(
-                          labelText: 'Neto Gravado 21%',
-                          prefixText: '\$ ',
-                          isDense: true,
-                        ),
-                        onChanged: (v) =>
-                            setState(() => _neto21 = double.tryParse(v) ?? 0.0),
-                      ),
+                filaResponsiva([
+                  TextFormField(
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true,
-                        ),
-                        decoration: const InputDecoration(
-                          labelText: 'Neto Gravado 10.5%',
-                          prefixText: '\$ ',
-                          isDense: true,
-                        ),
-                        onChanged: (v) => setState(
-                          () => _neto105 = double.tryParse(v) ?? 0.0,
-                        ),
-                      ),
+                    decoration: const InputDecoration(
+                      labelText: 'Neto Gravado 21%',
+                      prefixText: '\$ ',
+                      isDense: true,
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true,
-                        ),
-                        decoration: const InputDecoration(
-                          labelText: 'Neto Gravado 27%',
-                          prefixText: '\$ ',
-                          isDense: true,
-                        ),
-                        onChanged: (v) =>
-                            setState(() => _neto27 = double.tryParse(v) ?? 0.0),
-                      ),
+                    onChanged: (v) =>
+                        setState(() => _neto21 = double.tryParse(v) ?? 0.0),
+                  ),
+                  TextFormField(
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
                     ),
-                  ],
-                ),
+                    decoration: const InputDecoration(
+                      labelText: 'Neto Gravado 10.5%',
+                      prefixText: '\$ ',
+                      isDense: true,
+                    ),
+                    onChanged: (v) =>
+                        setState(() => _neto105 = double.tryParse(v) ?? 0.0),
+                  ),
+                  TextFormField(
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    decoration: const InputDecoration(
+                      labelText: 'Neto Gravado 27%',
+                      prefixText: '\$ ',
+                      isDense: true,
+                    ),
+                    onChanged: (v) =>
+                        setState(() => _neto27 = double.tryParse(v) ?? 0.0),
+                  ),
+                ]),
                 const SizedBox(height: 12),
                 TextFormField(
                   keyboardType: const TextInputType.numberWithOptions(
@@ -375,42 +345,34 @@ class _NuevaFacturaCompraDialogState extends State<NuevaFacturaCompraDialog> {
                 const SizedBox(height: 12),
 
                 // PERCEPCIONES NACIONALES
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextFormField(
-                        keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true,
-                        ),
-                        decoration: const InputDecoration(
-                          labelText: 'Percepción IVA',
-                          prefixText: '\$ ',
-                          isDense: true,
-                        ),
-                        onChanged: (v) => setState(
-                          () => _percepcionIVA = double.tryParse(v) ?? 0.0,
-                        ),
-                      ),
+                filaResponsiva([
+                  TextFormField(
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true,
-                        ),
-                        decoration: const InputDecoration(
-                          labelText: 'Percepción Ganancias',
-                          prefixText: '\$ ',
-                          isDense: true,
-                        ),
-                        onChanged: (v) => setState(
-                          () =>
-                              _percepcionGanancias = double.tryParse(v) ?? 0.0,
-                        ),
-                      ),
+                    decoration: const InputDecoration(
+                      labelText: 'Percepción IVA',
+                      prefixText: '\$ ',
+                      isDense: true,
                     ),
-                  ],
-                ),
+                    onChanged: (v) => setState(
+                      () => _percepcionIVA = double.tryParse(v) ?? 0.0,
+                    ),
+                  ),
+                  TextFormField(
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    decoration: const InputDecoration(
+                      labelText: 'Percepción Ganancias',
+                      prefixText: '\$ ',
+                      isDense: true,
+                    ),
+                    onChanged: (v) => setState(
+                      () => _percepcionGanancias = double.tryParse(v) ?? 0.0,
+                    ),
+                  ),
+                ]),
                 const SizedBox(height: 20),
 
                 // 5️⃣ COMPROBANTE ADJUNTO
@@ -466,8 +428,11 @@ class _NuevaFacturaCompraDialogState extends State<NuevaFacturaCompraDialog> {
                   ),
                   child: Column(
                     children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      // 📱 spaceBetween con 3 textos amontonaba todo en un
+                      // teléfono; Wrap deja que el que no entra baje de línea.
+                      Wrap(
+                        spacing: 16,
+                        runSpacing: 8,
                         children: [
                           Text(
                             'Neto Gravado: \$${_totalNeto.toStringAsFixed(2)}',

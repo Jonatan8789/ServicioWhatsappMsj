@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
+import '../../shared/fila_responsiva.dart';
 
 class OrdenPagoDialog extends StatefulWidget {
   final Map<String, dynamic> factura;
@@ -68,32 +69,31 @@ class _OrdenPagoDialogState extends State<OrdenPagoDialog> {
                 const SizedBox(height: 16),
 
                 // 💵 MONTO A PAGAR
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextFormField(
-                        initialValue: _saldoPendiente.toStringAsFixed(2),
-                        keyboardType:
-                            const TextInputType.numberWithOptions(decimal: true),
-                        decoration: const InputDecoration(
-                          labelText: 'Monto a Cancelar',
-                          prefixText: '\$ ',
-                          isDense: true,
-                          border: OutlineInputBorder(),
-                        ),
-                        validator: (v) {
-                          final val = double.tryParse(v ?? '');
-                          if (val == null || val <= 0) return 'Monto inválido';
-                          if (val > _saldoPendiente + 0.01) {
-                            return 'Excede el saldo (\$${_saldoPendiente.toStringAsFixed(2)})';
-                          }
-                          return null;
-                        },
-                        onChanged: (v) =>
-                            _montoAPagar = double.tryParse(v) ?? 0.0,
+                filaResponsiva(
+                  flexes: const [3, 1],
+                  [
+                    TextFormField(
+                      initialValue: _saldoPendiente.toStringAsFixed(2),
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
                       ),
+                      decoration: const InputDecoration(
+                        labelText: 'Monto a Cancelar',
+                        prefixText: '\$ ',
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
+                      validator: (v) {
+                        final val = double.tryParse(v ?? '');
+                        if (val == null || val <= 0) return 'Monto inválido';
+                        if (val > _saldoPendiente + 0.01) {
+                          return 'Excede el saldo (\$${_saldoPendiente.toStringAsFixed(2)})';
+                        }
+                        return null;
+                      },
+                      onChanged: (v) =>
+                          _montoAPagar = double.tryParse(v) ?? 0.0,
                     ),
-                    const SizedBox(width: 12),
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.blueGrey.shade100,
@@ -111,40 +111,36 @@ class _OrdenPagoDialogState extends State<OrdenPagoDialog> {
                 const SizedBox(height: 16),
 
                 // 💳 MEDIO DE PAGO & REFERENCIA
-                Row(
-                  children: [
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        value: _medioPago,
-                        decoration: const InputDecoration(
-                          labelText: 'Medio de Pago',
-                          isDense: true,
-                          border: OutlineInputBorder(),
-                        ),
-                        items: [
-                          'Transferencia Bancaria',
-                          'Efectivo (Caja Chica)',
-                          'ECHEQ / Cheque Propio',
-                          'Tarjeta Corporativa'
-                        ]
-                            .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                filaResponsiva([
+                  DropdownButtonFormField<String>(
+                    value: _medioPago,
+                    decoration: const InputDecoration(
+                      labelText: 'Medio de Pago',
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
+                    items:
+                        [
+                              'Transferencia Bancaria',
+                              'Efectivo (Caja Chica)',
+                              'ECHEQ / Cheque Propio',
+                              'Tarjeta Corporativa',
+                            ]
+                            .map(
+                              (e) => DropdownMenuItem(value: e, child: Text(e)),
+                            )
                             .toList(),
-                        onChanged: (v) => setState(() => _medioPago = v!),
-                      ),
+                    onChanged: (v) => setState(() => _medioPago = v!),
+                  ),
+                  TextFormField(
+                    decoration: const InputDecoration(
+                      labelText: 'N° Recibo / Ref. Transacción',
+                      isDense: true,
+                      border: OutlineInputBorder(),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        decoration: const InputDecoration(
-                          labelText: 'N° Recibo / Ref. Transacción',
-                          isDense: true,
-                          border: OutlineInputBorder(),
-                        ),
-                        onChanged: (v) => _referenciaComprobante = v.trim(),
-                      ),
-                    ),
-                  ],
-                ),
+                    onChanged: (v) => _referenciaComprobante = v.trim(),
+                  ),
+                ]),
                 const SizedBox(height: 16),
 
                 // 📅 FECHA DE EMISIÓN

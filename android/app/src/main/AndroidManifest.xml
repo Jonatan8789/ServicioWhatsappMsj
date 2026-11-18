@@ -4,6 +4,23 @@
     <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
     <uses-permission android:name="android.permission.USE_FINGERPRINT"/>
 
+    <!-- 🎙️ Permisos para carga de puntos por voz en el marcador de pádel -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.BLUETOOTH"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+    <!-- 📷 Escaneo de QR (mobile_scanner) en control de acceso / carnet.
+         El plugin ya lo declara en su propio manifest (se fusiona solo),
+         pero se deja explícito acá para que quede documentado qué usa la
+         app y no dependa de que el merge nunca cambie. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- 🔔 Requerido desde Android 13 (API 33) para que las notificaciones
+         push de FCM puedan mostrarse — sin este permiso, llegan pero no se
+         ven, sin ningún error visible. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
     <application
         android:label="natatorio_app"
         android:name="${applicationName}"
@@ -45,6 +62,11 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- 🎙️ Requerido desde Android 11 (SDK 30+) para que el plugin de
+             reconocimiento de voz pueda detectar el servicio del sistema. -->
+        <intent>
+            <action android:name="android.speech.RecognitionService"/>
         </intent>
     </queries>
 </manifest>

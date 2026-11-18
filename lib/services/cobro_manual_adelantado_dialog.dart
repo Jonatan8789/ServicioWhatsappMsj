@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'sugerencia_fiscal_service.dart';
+import '../shared/mercado_pago_dialog.dart';
 
 class CobroManualAdelantadoDialog extends StatefulWidget {
   final String socioId;
@@ -59,6 +60,10 @@ class _CobroManualAdelantadoDialogState
       // falla, se sigue registrando el cobro igual (como comprobante no
       // fiscal), tal como ya hace pos_caja_page.dart con las ventas.
       String? caeFactura;
+      String? vencimientoCaeFactura;
+      num? nroFacturaLegal;
+      num? puntoVentaLegal;
+      num? tipoComprobanteLegal;
       if (_emitirFacturaFiscal) {
         try {
           final callable = FirebaseFunctions.instance.httpsCallable(
@@ -81,7 +86,16 @@ class _CobroManualAdelantadoDialogState
             'periodoHasta': periodoHasta,
           });
           if (resp.data['success'] == true) {
+            // 🚨 Antes sólo se guardaba el CAE y se descartaba el resto de
+            // la respuesta (N° de factura, punto de venta, vencimiento) —
+            // igual bug que ya se había corregido en pos_caja_page.dart.
+            // Sin esto, el Libro IVA / export CITI no puede reconstruir el
+            // número de comprobante real de una cuota facturada.
             caeFactura = resp.data['cae'];
+            vencimientoCaeFactura = resp.data['vencimientoCae'];
+            nroFacturaLegal = resp.data['nroFactura'];
+            puntoVentaLegal = resp.data['puntoVenta'];
+            tipoComprobanteLegal = resp.data['tipoComprobante'];
           } else if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
@@ -146,6 +160,10 @@ class _CobroManualAdelantadoDialogState
         'facturadoArca': _emitirFacturaFiscal && caeFactura != null,
         'cae':
             caeFactura ?? (_emitirFacturaFiscal ? 'ERROR_CAE' : 'NO_FISCAL'),
+        if (vencimientoCaeFactura != null) 'vencimientoCae': vencimientoCaeFactura,
+        if (nroFacturaLegal != null) 'nroFacturaLegal': nroFacturaLegal,
+        if (puntoVentaLegal != null) 'puntoVentaLegal': puntoVentaLegal,
+        if (tipoComprobanteLegal != null) 'tipoComprobanteLegal': tipoComprobanteLegal,
       });
 
       if (cuotaPendienteSnap.docs.isNotEmpty) {
@@ -174,6 +192,19 @@ class _CobroManualAdelantadoDialogState
       });
 
       await batch.commit();
+
+      // 💳 Si se cobra por MP, el registro ya quedó asentado arriba (mismo
+      // criterio que POS/canchas: no se hace esperar al socio para dejar
+      // constancia), y acá se muestra el QR real como verificación en vivo.
+      if (_medioPago == 'Mercado Pago' && mounted) {
+        await mostrarSelectorCobroMercadoPago(
+          context,
+          ruta: 'socios/${widget.socioId}/cuenta_corriente/${ctaCteRef.id}',
+          campoMonto: 'monto',
+          campoMedioPago: 'medioPago',
+          concepto: 'Cuota $periodo - ${widget.nombreSocio}',
+        );
+      }
 
       if (mounted) {
         Navigator.pop(context, true);
@@ -253,7 +284,7 @@ class _CobroManualAdelantadoDialogState
               decoration: const InputDecoration(labelText: 'Medio de Pago'),
               items: [
                 'Efectivo',
-                'Mercado Pago / QR',
+                'Mercado Pago',
                 'Transferencia',
                 'Tarjeta',
               ].map((m) => DropdownMenuItem(value: m, child: Text(m))).toList(),

@@ -209,11 +209,6 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
               Colors.amber,
             ),
             _cardMonto(
-              'Recaudado Mercado Pago',
-              '\$${((data['totalMercadoPago'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(2)} ARS',
-              Colors.blue,
-            ),
-            _cardMonto(
               'Recaudado MODO',
               '\$${((data['totalModo'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(2)} ARS',
               Colors.purple,
@@ -240,6 +235,15 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
             ),
           ],
         ),
+        const SizedBox(height: 20),
+        // 💳 El total "totalMercadoPago" de control_cajas se suma apenas el
+        // cajero elige ese medio de pago, sin esperar la confirmación real
+        // del webhook — un QR nunca escaneado quedaba contado igual que uno
+        // cobrado de verdad, y el cajero cerraba el turno sin poder
+        // distinguirlos salvo que hubiera mirado el diálogo en vivo. Este
+        // bloque cruza en tiempo real contra los comprobantes reales
+        // (estadoPagoMP) para separar lo verificado de lo pendiente.
+        _buildReconciliacionMercadoPago(docCajaAbierta.id),
         const SizedBox(height: 30),
         const Text(
           'Auditoría de Novedades e Incidencias en Vivo:',
@@ -248,6 +252,102 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
         const SizedBox(height: 12),
         _buildListaMovimientosCaja(docCajaAbierta.id),
       ],
+    );
+  }
+
+  Widget _buildReconciliacionMercadoPago(String cajaId) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: _firestore
+          .collection('ventas_buffet')
+          .where('cajaId', isEqualTo: cajaId)
+          .where('medio_pago', isEqualTo: 'Mercado Pago')
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const LinearProgressIndicator();
+        }
+
+        double totalVerificado = 0.0;
+        double totalPendiente = 0.0;
+        final List<QueryDocumentSnapshot> pendientes = [];
+
+        for (var doc in snapshot.data!.docs) {
+          final v = doc.data() as Map<String, dynamic>;
+          if (v['anulado'] == true) continue;
+          final double monto = (v['total'] as num?)?.toDouble() ?? 0.0;
+          if (v['estadoPagoMP'] == 'Aprobado') {
+            totalVerificado += monto;
+          } else {
+            totalPendiente += monto;
+            pendientes.add(doc);
+          }
+        }
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: _cardMonto(
+                    'MP Verificado (Webhook OK)',
+                    '\$${totalVerificado.toStringAsFixed(2)} ARS',
+                    Colors.blue,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: _cardMonto(
+                    'MP Sin Confirmar Todavía',
+                    '\$${totalPendiente.toStringAsFixed(2)} ARS',
+                    pendientes.isEmpty ? Colors.grey : Colors.red,
+                  ),
+                ),
+              ],
+            ),
+            if (pendientes.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.red.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.red.shade200),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.warning_amber_rounded, color: Colors.red.shade800, size: 18),
+                        const SizedBox(width: 6),
+                        Text(
+                          '${pendientes.length} venta(s) marcada(s) como Mercado Pago sin confirmación del webhook — no cerrar el turno sin revisarlas.',
+                          style: TextStyle(fontSize: 12.5, color: Colors.red.shade900, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    ...pendientes.map((doc) {
+                      final v = doc.data() as Map<String, dynamic>;
+                      final double monto = (v['total'] as num?)?.toDouble() ?? 0.0;
+                      final fecha = (v['fecha'] as Timestamp?)?.toDate();
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Text(
+                          '• \$${monto.toStringAsFixed(2)} ARS${fecha != null ? ' — ${DateFormat('HH:mm').format(fecha)}' : ''}',
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      );
+                    }),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        );
+      },
     );
   }
 
@@ -324,59 +424,98 @@ class _TesoreriaPageState extends State<TesoreriaPage> {
             'No hay registros de cierres en el sistema.',
             style: TextStyle(color: Colors.grey),
           ),
+        // 💸 Antes cada fila de este historial abría su PROPIO listener en
+        // vivo contra 'ventas_buffet' (uno por caja cerrada) sólo para saber
+        // si quedaba algún MP sin confirmar — con muchos cierres acumulados
+        // eso son N listeners concurrentes facturándose todo el tiempo que
+        // la pantalla esté abierta. Ahora es una única consulta (sin filtro
+        // de cajaId) que se agrupa una vez en memoria y se reparte a cada
+        // fila.
         if (cerradas.isNotEmpty)
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFFE2E8F0)),
-            ),
-            child: ListView.separated(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: cerradas.length,
-              separatorBuilder: (_, __) =>
-                  const Divider(height: 1, color: Color(0xFFF1F5F9)),
-              itemBuilder: (context, idx) {
-                final data = cerradas[idx].data() as Map<String, dynamic>;
-                final inicio = (data['fechaApertura'] as Timestamp).toDate();
-                final fin = data['fechaCierre'] != null
-                    ? (data['fechaCierre'] as Timestamp).toDate()
-                    : DateTime.now();
+          StreamBuilder<QuerySnapshot>(
+            stream: _firestore
+                .collection('ventas_buffet')
+                .where('medio_pago', isEqualTo: 'Mercado Pago')
+                .snapshots(),
+            builder: (context, snapMp) {
+              final Map<String, int> pendientesPorCaja = {};
+              if (snapMp.hasData) {
+                for (var doc in snapMp.data!.docs) {
+                  final v = doc.data() as Map<String, dynamic>;
+                  if (v['anulado'] == true || v['estadoPagoMP'] == 'Aprobado') continue;
+                  final String? cajaId = v['cajaId'];
+                  if (cajaId == null) continue;
+                  pendientesPorCaja[cajaId] = (pendientesPorCaja[cajaId] ?? 0) + 1;
+                }
+              }
 
-                return ListTile(
-                  leading: const Icon(
-                    Icons.history_toggle_off_rounded,
-                    color: Colors.blueGrey,
-                  ),
-                  title: Text(
-                    'Caja: [${data['nombreCajaTerminal'] ?? "General"}] • Turno: ${data['usuario']}',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  subtitle: Text(
-                    'Apertura: ${DateFormat('dd/MM/yyyy HH:mm').format(inicio)} | Cierre: ${DateFormat('HH:mm').format(fin)}',
-                  ),
-                  trailing: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(
-                        '\$${((data['totalFinalGeneral'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(0)} ARS',
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: Colors.teal,
-                          fontSize: 16,
-                        ),
+              return Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFE2E8F0)),
+                ),
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: cerradas.length,
+                  separatorBuilder: (_, __) =>
+                      const Divider(height: 1, color: Color(0xFFF1F5F9)),
+                  itemBuilder: (context, idx) {
+                    final data = cerradas[idx].data() as Map<String, dynamic>;
+                    final inicio = (data['fechaApertura'] as Timestamp).toDate();
+                    final fin = data['fechaCierre'] != null
+                        ? (data['fechaCierre'] as Timestamp).toDate()
+                        : DateTime.now();
+                    final int pendientes = pendientesPorCaja[cerradas[idx].id] ?? 0;
+
+                    return ListTile(
+                      leading: const Icon(
+                        Icons.history_toggle_off_rounded,
+                        color: Colors.blueGrey,
                       ),
-                      const Text(
-                        'Total Consolidado',
-                        style: TextStyle(fontSize: 10, color: Colors.grey),
+                      title: Text(
+                        'Caja: [${data['nombreCajaTerminal'] ?? "General"}] • Turno: ${data['usuario']}',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
-                    ],
-                  ),
-                );
-              },
-            ),
+                      subtitle: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'Apertura: ${DateFormat('dd/MM/yyyy HH:mm').format(inicio)} | Cierre: ${DateFormat('HH:mm').format(fin)}',
+                            ),
+                          ),
+                          if (pendientes > 0)
+                            Tooltip(
+                              message: '$pendientes venta(s) MP de este turno sin confirmar por el webhook',
+                              child: Icon(Icons.warning_amber_rounded, color: Colors.red.shade700, size: 18),
+                            ),
+                        ],
+                      ),
+                      trailing: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            '\$${((data['totalFinalGeneral'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(0)} ARS',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.teal,
+                              fontSize: 16,
+                            ),
+                          ),
+                          const Text(
+                            'Total Consolidado',
+                            style: TextStyle(fontSize: 10, color: Colors.grey),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              );
+            },
           ),
       ],
     );

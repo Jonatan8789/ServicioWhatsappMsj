@@ -17,6 +17,24 @@ class _AlumnosPorProfesorViewState extends State<AlumnosPorProfesorView> {
   String? _diaSeleccionado;
   String? _actividadSeleccionada;
 
+  // 💸 Antes esta vista (y el diálogo de "Asignar Manual") streameaban en
+  // vivo la colección ENTERA de socios, cada uno por su cuenta — dos
+  // listeners completos por cada profesor que se mira. Ahora se trae una
+  // sola vez y se comparte entre ambos usos; "Actualizar" la refresca.
+  List<QueryDocumentSnapshot> _todosLosSocios = [];
+  bool _cargandoSocios = true;
+
+  Future<void> _cargarSocios() async {
+    setState(() => _cargandoSocios = true);
+    final snap = await _firestore.collection('socios').get();
+    if (mounted) {
+      setState(() {
+        _todosLosSocios = snap.docs;
+        _cargandoSocios = false;
+      });
+    }
+  }
+
   final List<String> _diasSemana = [
     'Todos',
     'Lunes',
@@ -34,6 +52,7 @@ class _AlumnosPorProfesorViewState extends State<AlumnosPorProfesorView> {
     if (widget.profesor.especialidades.isNotEmpty) {
       _actividadSeleccionada = widget.profesor.especialidades.first;
     }
+    _cargarSocios();
   }
 
   @override
@@ -84,6 +103,12 @@ class _AlumnosPorProfesorViewState extends State<AlumnosPorProfesorView> {
                   ],
                 ),
               ),
+              IconButton(
+                tooltip: 'Actualizar lista de socios',
+                icon: const Icon(Icons.refresh_rounded),
+                onPressed: _cargarSocios,
+              ),
+              const SizedBox(width: 8),
               ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF1E293B),
@@ -148,10 +173,9 @@ class _AlumnosPorProfesorViewState extends State<AlumnosPorProfesorView> {
 
           // Lista de Alumnos Filtrados
           Expanded(
-            child: StreamBuilder<QuerySnapshot>(
-              stream: _firestore.collection('socios').snapshots(),
-              builder: (context, socioSnapshot) {
-                if (!socioSnapshot.hasData) {
+            child: Builder(
+              builder: (context) {
+                if (_cargandoSocios) {
                   return const Center(child: CircularProgressIndicator());
                 }
 
@@ -174,7 +198,7 @@ class _AlumnosPorProfesorViewState extends State<AlumnosPorProfesorView> {
                         )
                         .toSet();
 
-                    final alumnosFiltrados = socioSnapshot.data!.docs.where((
+                    final alumnosFiltrados = _todosLosSocios.where((
                       doc,
                     ) {
                       final data = doc.data() as Map<String, dynamic>;
@@ -291,12 +315,12 @@ class _AlumnosPorProfesorViewState extends State<AlumnosPorProfesorView> {
           content: SizedBox(
             width: 400,
             height: 300,
-            child: StreamBuilder<QuerySnapshot>(
-              stream: _firestore.collection('socios').snapshots(),
-              builder: (context, snapshot) {
-                if (!snapshot.hasData)
+            child: Builder(
+              builder: (context) {
+                if (_cargandoSocios) {
                   return const Center(child: CircularProgressIndicator());
-                final socios = snapshot.data!.docs;
+                }
+                final socios = _todosLosSocios;
 
                 return ListView.builder(
                   itemCount: socios.length,

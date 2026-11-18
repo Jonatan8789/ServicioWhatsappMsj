@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../../services/familia_service.dart';
 import 'socio_model.dart';
 
@@ -223,6 +224,21 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
                       .where('deporte', isEqualTo: deporteMasivo)
                       .get();
 
+                  // 🚨 Antes hacía un `credRef.get()` POR SOCIO dentro del
+                  // loop para saber si ya tenía crédito cargado este
+                  // período — con cientos de socios en un deporte, eso son
+                  // cientos de lecturas secuenciales antes de escribir nada.
+                  // Mismo fix que liquidacion_cuotas_service.dart: una sola
+                  // consulta collectionGroup fuera del loop.
+                  final creditosPeriodoSnap = await _firestore
+                      .collectionGroup('creditos_mensuales')
+                      .where('periodo', isEqualTo: periodoClave)
+                      .get();
+                  final Set<String> sociosConCredito = creditosPeriodoSnap
+                      .docs
+                      .map((d) => d.reference.parent.parent!.id)
+                      .toSet();
+
                   final batch = _firestore.batch();
                   for (var doc in sociosSnap.docs) {
                     final credRef = _firestore
@@ -231,8 +247,7 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
                         .collection('creditos_mensuales')
                         .doc(periodoClave);
 
-                    final credSnap = await credRef.get();
-                    if (!credSnap.exists) {
+                    if (!sociosConCredito.contains(doc.id)) {
                       final int limiteBase = _limiteClasesDesdeFrecuencia(
                         doc.data()['frecuencia']?.toString(),
                       );
@@ -275,8 +290,7 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
                   }
                 }
 
-                if (mounted) {
-                  Navigator.pop(ctx);
+                if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text(
@@ -288,6 +302,7 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
                     ),
                   );
                 }
+                if (ctx.mounted) Navigator.pop(ctx);
               },
               child: const Text(
                 'Acreditar',
@@ -316,7 +331,7 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
         await launchUrl(url, mode: LaunchMode.externalApplication);
       }
     } catch (e) {
-      if (mounted) {
+      if (context.mounted) {
         showDialog(
           context: context,
           builder: (context) => AlertDialog(
@@ -569,9 +584,8 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
                           grupoFamiliarIdB: encontrado!['grupoFamiliarId']
                               ?.toString(),
                         );
-                        if (mounted) {
+                        if (context.mounted) {
                           setState(() => _grupoFamiliarId = nuevoGrupoId);
-                          Navigator.pop(ctx);
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
                               content: Text('✅ Grupo familiar vinculado.'),
@@ -579,6 +593,7 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
                             ),
                           );
                         }
+                        if (ctx.mounted) Navigator.pop(ctx);
                       } catch (e) {
                         setModalState(() => error = 'Error al vincular: $e');
                       }
@@ -617,9 +632,9 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
         setState(() => _grupoFamiliarId = null);
       }
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Familiar desvinculado.')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Familiar desvinculado.')));
       }
     }
   }
@@ -713,10 +728,8 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
                         color: Colors.red,
                       ),
                       tooltip: 'Quitar del grupo',
-                      onPressed: () => _desvincularFamiliar(
-                        d.id,
-                        data['nombre'] ?? 'Socio',
-                      ),
+                      onPressed: () =>
+                          _desvincularFamiliar(d.id, data['nombre'] ?? 'Socio'),
                     ),
                   ],
                 ),
@@ -736,436 +749,491 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
 
   @override
   Widget build(BuildContext context) {
-    final hoy = DateTime.now();
-    final bool aptoValido =
-        widget.socio.vencimientoAptoMedico != null &&
-        widget.socio.vencimientoAptoMedico!.isAfter(hoy);
+    final bool aptoValido = vencimientoVigente(
+      widget.socio.vencimientoAptoMedico,
+    );
     final int cantHuellas = widget.socio.huellasHashes.length;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
-      body: Column(
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 24),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          // 📱 Por debajo de este ancho la ficha no entra en dos columnas
+          // (era un Row fijo flex:1 / flex:2) ni la barra superior en una
+          // sola línea: los paneles se apilan dentro del mismo scroll (sin
+          // Expanded, en Column cada uno toma su altura natural) y las
+          // acciones pasan debajo del título, a lo ancho.
+          final bool esMovil = constraints.maxWidth < 700;
+
+          final Widget tituloFicha = Text(
+            'Ficha Detallada: ${widget.socio.nombre}',
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: esMovil ? 18 : 24,
+              fontWeight: FontWeight.bold,
+              color: const Color(0xFF0F172A),
+            ),
+          );
+
+          final Widget chipNumeroSocio = Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF1F5F9),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              'N° ${widget.socio.numeroSocio}',
+              style: const TextStyle(
+                fontSize: 14,
+                color: Colors.blueGrey,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          );
+
+          final Widget botonCarnetQr = OutlinedButton.icon(
+            icon: const Icon(Icons.qr_code_2_rounded, size: 18),
+            label: const Text('Ver Carnet QR'),
+            onPressed: _mostrarCarnetQr,
+          );
+
+          final Widget botonAcreditarClases = ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.teal.shade700,
+              foregroundColor: Colors.white,
+            ),
+            icon: const Icon(Icons.add_task_rounded, size: 18),
+            label: const Text('Acreditar Clases Extra'),
+            onPressed: _mostrarDialogoAcreditarClases,
+          );
+
+          final Widget encabezado = Container(
+            padding: EdgeInsets.symmetric(
+              horizontal: esMovil ? 16 : 40,
+              vertical: esMovil ? 16 : 24,
+            ),
             color: Colors.white,
-            child: Row(
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.arrow_back_ios_new_rounded),
-                  onPressed: widget.onVolver,
-                ),
-                const SizedBox(width: 16),
-                Text(
-                  'Ficha Detallada: ${widget.socio.nombre}',
-                  style: const TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF0F172A),
+            child: esMovil
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.arrow_back_ios_new_rounded),
+                            onPressed: widget.onVolver,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(child: tituloFicha),
+                          const SizedBox(width: 8),
+                          chipNumeroSocio,
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      botonCarnetQr,
+                      const SizedBox(height: 8),
+                      botonAcreditarClases,
+                    ],
+                  )
+                : Row(
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.arrow_back_ios_new_rounded),
+                        onPressed: widget.onVolver,
+                      ),
+                      const SizedBox(width: 16),
+                      Flexible(child: tituloFicha),
+                      const SizedBox(width: 12),
+                      chipNumeroSocio,
+                      const Spacer(),
+                      botonCarnetQr,
+                      const SizedBox(width: 12),
+                      botonAcreditarClases,
+                    ],
                   ),
-                ),
-                const SizedBox(width: 12),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 4,
+          );
+
+          final Widget panelFotoEstado = Card(
+            elevation: 0,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: const BorderSide(color: Color(0xFFE2E8F0)),
+            ),
+            child: Padding(
+              padding: EdgeInsets.all(esMovil ? 20.0 : 32.0),
+              child: Column(
+                children: [
+                  CircleAvatar(
+                    radius: 75,
+                    backgroundColor: Colors.teal.withOpacity(0.1),
+                    child: widget.socio.fotoUrl.isNotEmpty
+                        ? ClipRRect(
+                            borderRadius: BorderRadius.circular(75),
+                            child: CachedNetworkImage(
+                              imageUrl: widget.socio.fotoUrl,
+                              width: 150,
+                              height: 150,
+                              fit: BoxFit.cover,
+                              placeholder: (context, url) =>
+                                  const CircularProgressIndicator(
+                                    color: Colors.teal,
+                                  ),
+                              errorWidget: (_, __, ___) => const Icon(
+                                Icons.person,
+                                size: 70,
+                                color: Colors.teal,
+                              ),
+                            ),
+                          )
+                        : const Icon(
+                            Icons.person,
+                            size: 70,
+                            color: Colors.teal,
+                          ),
                   ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF1F5F9),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    'N° ${widget.socio.numeroSocio}',
+                  const SizedBox(height: 24),
+                  Text(
+                    widget.socio.nombre,
+                    textAlign: TextAlign.center,
                     style: const TextStyle(
-                      fontSize: 14,
-                      color: Colors.blueGrey,
+                      fontSize: 20,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                ),
-                const Spacer(),
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.qr_code_2_rounded, size: 18),
-                  label: const Text('Ver Carnet QR'),
-                  onPressed: _mostrarCarnetQr,
-                ),
-                const SizedBox(width: 12),
-                ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.teal.shade700,
-                    foregroundColor: Colors.white,
+                  Text(
+                    'DNI ${widget.socio.dni}',
+                    style: const TextStyle(color: Colors.grey),
                   ),
-                  icon: const Icon(Icons.add_task_rounded, size: 18),
-                  label: const Text('Acreditar Clases Extra'),
-                  onPressed: _mostrarDialogoAcreditarClases,
-                ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(40.0),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    flex: 1,
-                    child: Card(
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
-                        side: const BorderSide(color: Color(0xFFE2E8F0)),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(32.0),
-                        child: Column(
-                          children: [
-                            CircleAvatar(
-                              radius: 75,
-                              backgroundColor: Colors.teal.withOpacity(0.1),
-                              child: widget.socio.fotoUrl.isNotEmpty
-                                  ? ClipRRect(
-                                      borderRadius: BorderRadius.circular(75),
-                                      child: Image.network(
-                                        widget.socio.fotoUrl,
-                                        width: 150,
-                                        height: 150,
-                                        fit: BoxFit.cover,
-                                        loadingBuilder: (context, child, progress) {
-                                          if (progress == null) return child;
-                                          return const CircularProgressIndicator(
-                                            color: Colors.teal,
-                                          );
-                                        },
-                                        errorBuilder: (_, __, ___) =>
-                                            const Icon(
-                                              Icons.person,
-                                              size: 70,
-                                              color: Colors.teal,
-                                            ),
-                                      ),
-                                    )
-                                  : const Icon(
-                                      Icons.person,
-                                      size: 70,
-                                      color: Colors.teal,
-                                    ),
-                            ),
-                            const SizedBox(height: 24),
-                            Text(
-                              widget.socio.nombre,
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            Text(
-                              'DNI ${widget.socio.dni}',
-                              style: const TextStyle(color: Colors.grey),
-                            ),
-                            const SizedBox(height: 24),
-                            const Divider(),
-                            const SizedBox(height: 16),
+                  const SizedBox(height: 24),
+                  const Divider(),
+                  const SizedBox(height: 16),
 
-                            _buildEstadoFicha(
-                              'Matrícula Anual',
-                              widget.socio.matriculaAlDia
-                                  ? 'Al día (${widget.socio.fechaPagoMatricula != null ? DateFormat('dd/MM/yy').format(widget.socio.fechaPagoMatricula!) : 'S/D'})'
-                                  : 'PENDIENTE',
-                              widget.socio.matriculaAlDia
-                                  ? Colors.green
-                                  : Colors.red,
-                            ),
-                            const SizedBox(height: 12),
-                            _buildEstadoFicha(
-                              'Último Mes Pago',
-                              widget.socio.ultimoMesPago.isNotEmpty
-                                  ? widget.socio.ultimoMesPago
-                                  : 'Sin Registros',
-                              Colors.indigo,
-                            ),
-                            const SizedBox(height: 12),
-                            _buildEstadoFicha(
-                              'Control Médico',
-                              aptoValido ? 'Apto Vigente' : 'APTO VENCIDO',
-                              aptoValido ? Colors.green : Colors.red,
-                            ),
-                            const SizedBox(height: 12),
-                            _buildEstadoFicha(
-                              'Estado Cta Cte',
-                              widget.socio.saldoCuentaCorriente >= 0
-                                  ? 'Al día (\$${widget.socio.saldoCuentaCorriente.toStringAsFixed(0)})'
-                                  : 'Deuda (\$${widget.socio.saldoCuentaCorriente.abs().toStringAsFixed(0)})',
-                              widget.socio.saldoCuentaCorriente >= 0
-                                  ? Colors.green
-                                  : Colors.red,
-                            ),
-
-                            const SizedBox(height: 20),
-                            const Divider(),
-                            const SizedBox(height: 12),
-
-                            // 🔐 SECCIÓN DE BIOMETRÍA Y RESETEO DE HUELLAS
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const Text(
-                                      'Biometría Registrada',
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.bold,
-                                        color: Colors.blueGrey,
-                                      ),
-                                    ),
-                                    Text(
-                                      cantHuellas > 0
-                                          ? '$cantHuellas huella(s) vinculada(s)'
-                                          : 'Sin huellas enroladas',
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        color: cantHuellas > 0
-                                            ? Colors.green.shade800
-                                            : Colors.red,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                if (cantHuellas > 0)
-                                  IconButton(
-                                    icon: const Icon(
-                                      Icons.restart_alt_rounded,
-                                      color: Colors.red,
-                                    ),
-                                    tooltip: 'Resetear Huellas Digitales',
-                                    onPressed: _resetearHuellasSocio,
-                                  ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
+                  _buildEstadoFicha(
+                    'Matrícula Anual',
+                    widget.socio.matriculaAlDia
+                        ? 'Al día (${widget.socio.fechaPagoMatricula != null ? DateFormat('dd/MM/yy').format(widget.socio.fechaPagoMatricula!) : 'S/D'})'
+                        : 'PENDIENTE',
+                    widget.socio.matriculaAlDia ? Colors.green : Colors.red,
+                    accionIcono: Icons.edit_calendar_rounded,
+                    accionTooltip: 'Asentar pago de matrícula con fecha previa',
+                    onAccion: _registrarMatriculaPrevio,
                   ),
-                  const SizedBox(width: 40),
-                  Expanded(
-                    flex: 2,
-                    child: Container(
-                      padding: const EdgeInsets.all(32),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                      ),
-                      child: Column(
+                  const SizedBox(height: 12),
+                  _buildEstadoFicha(
+                    'Último Mes Pago',
+                    widget.socio.ultimoMesPago.isNotEmpty
+                        ? widget.socio.ultimoMesPago
+                        : 'Sin Registros',
+                    Colors.indigo,
+                  ),
+                  const SizedBox(height: 12),
+                  _buildEstadoFicha(
+                    'Control Médico',
+                    aptoValido ? 'Apto Vigente' : 'APTO VENCIDO',
+                    aptoValido ? Colors.green : Colors.red,
+                    accionIcono: Icons.description_outlined,
+                    accionTooltip: 'Ver apto médico adjunto',
+                    onAccion: () => _abrirAptoMedico(context),
+                  ),
+                  const SizedBox(height: 12),
+                  _buildEstadoFicha(
+                    'Estado Cta Cte',
+                    widget.socio.saldoCuentaCorriente >= 0
+                        ? 'Al día (\$${widget.socio.saldoCuentaCorriente.toStringAsFixed(0)})'
+                        : 'Deuda (\$${widget.socio.saldoCuentaCorriente.abs().toStringAsFixed(0)})',
+                    widget.socio.saldoCuentaCorriente >= 0
+                        ? Colors.green
+                        : Colors.red,
+                  ),
+
+                  const SizedBox(height: 20),
+                  const Divider(),
+                  const SizedBox(height: 12),
+
+                  // 🔐 SECCIÓN DE BIOMETRÍA Y RESETEO DE HUELLAS
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          _buildSeccionTitulo('Contacto & Datos Personales'),
-                          const SizedBox(height: 20),
-                          Row(
-                            children: [
-                              _buildDatoItem(
-                                'Teléfono Móvil',
-                                widget.socio.telefono.isNotEmpty
-                                    ? widget.socio.telefono
-                                    : 'No registrado',
-                                Icons.phone,
-                              ),
-                              _buildDatoItem(
-                                'Contacto de Emergencia / Email',
-                                widget.socio.contactoEmergencia.isNotEmpty
-                                    ? widget.socio.contactoEmergencia
-                                    : 'Sin registrar',
-                                Icons.email_outlined,
-                              ),
-                            ],
+                          const Text(
+                            'Biometría Registrada',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.blueGrey,
+                            ),
                           ),
-                          const SizedBox(height: 24),
-                          const Divider(),
-                          const SizedBox(height: 16),
-
-                          _buildSeccionTitulo('Deporte & Horarios'),
-                          const SizedBox(height: 20),
-                          Row(
-                            children: [
-                              _buildDatoItem(
-                                'Actividad Principal',
-                                widget.socio.deporte.isNotEmpty
-                                    ? widget.socio.deporte
-                                    : 'General',
-                                Icons.sports,
-                              ),
-                              _buildDatoItem(
-                                'Frecuencia',
-                                widget.socio.frecuencia.isNotEmpty
-                                    ? widget.socio.frecuencia
-                                    : 'Pase Libre',
-                                Icons.repeat,
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 20),
-                          Row(
-                            children: [
-                              _buildDatoItem(
-                                'Grado / Año Académico',
-                                (widget.socio.gradoAnio?.isNotEmpty ?? false)
-                                    ? widget.socio.gradoAnio!
-                                    : 'No aplica',
-                                Icons.school_outlined,
-                              ),
-                              _buildDatoItem(
-                                'Bloque Horario',
-                                _etiquetaHorarioTraduccion,
-                                Icons.schedule_rounded,
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 24),
-                          const Divider(),
-                          const SizedBox(height: 16),
-
-                          _buildSeccionTitulo(
-                            'Grupo Familiar (Descuento por Vínculo)',
-                          ),
-                          const SizedBox(height: 16),
-                          _buildSeccionGrupoFamiliar(),
-
-                          const SizedBox(height: 24),
-                          const Divider(),
-                          const SizedBox(height: 16),
-
-                          // 📊 HISTÓRICO DE ASISTENCIAS EN VIVO (ORDENADO EN MEMORIA)
-                          _buildSeccionTitulo('Histórico de Clases Asistidas'),
-                          const SizedBox(height: 16),
-                          SizedBox(
-                            height: 220,
-                            child: StreamBuilder<QuerySnapshot>(
-                              stream: _firestore
-                                  .collection('asistencias_accesos')
-                                  .where('socioId', isEqualTo: widget.socio.id)
-                                  .snapshots(),
-                              builder: (context, snapshot) {
-                                if (snapshot.hasError) {
-                                  return Center(
-                                    child: Text(
-                                      'Error al cargar asistencias: ${snapshot.error}',
-                                      style: const TextStyle(
-                                        color: Colors.red,
-                                        fontSize: 12,
-                                      ),
-                                    ),
-                                  );
-                                }
-
-                                if (!snapshot.hasData) {
-                                  return const Center(
-                                    child: CircularProgressIndicator(
-                                      color: Colors.teal,
-                                    ),
-                                  );
-                                }
-
-                                final docs = snapshot.data!.docs.toList();
-
-                                if (docs.isEmpty) {
-                                  return const Center(
-                                    child: Text(
-                                      'Sin asistencias registradas para este socio.',
-                                      style: TextStyle(color: Colors.grey),
-                                    ),
-                                  );
-                                }
-
-                                // Ordenamiento en memoria por fecha desc
-                                docs.sort((a, b) {
-                                  final dataA =
-                                      a.data() as Map<String, dynamic>;
-                                  final dataB =
-                                      b.data() as Map<String, dynamic>;
-                                  final fechaA =
-                                      (dataA['fechaHora'] as Timestamp?)
-                                          ?.toDate() ??
-                                      DateTime(2000);
-                                  final fechaB =
-                                      (dataB['fechaHora'] as Timestamp?)
-                                          ?.toDate() ??
-                                      DateTime(2000);
-                                  return fechaB.compareTo(fechaA);
-                                });
-
-                                return ListView.builder(
-                                  itemCount: docs.length,
-                                  itemBuilder: (context, idx) {
-                                    final data =
-                                        docs[idx].data()
-                                            as Map<String, dynamic>;
-                                    final DateTime fecha =
-                                        (data['fechaHora'] as Timestamp?)
-                                            ?.toDate() ??
-                                        DateTime.now();
-                                    final bool esExcepcion =
-                                        data['modo'] == 'EXCEPCION_MANUAL';
-
-                                    return ListTile(
-                                      dense: true,
-                                      leading: Icon(
-                                        esExcepcion
-                                            ? Icons.warning_amber_rounded
-                                            : Icons.check_circle_outline,
-                                        color: esExcepcion
-                                            ? Colors.orange
-                                            : Colors.green,
-                                      ),
-                                      title: Text(
-                                        DateFormat(
-                                          'dd/MM/yyyy HH:mm',
-                                        ).format(fecha),
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                      subtitle: Text(
-                                        esExcepcion
-                                            ? 'Excepción: ${data['motivoExcepcion'] ?? 'Bypass Admin'}'
-                                            : 'Ingreso Validado (Quedaban: ${data['creditosRestantes'] ?? 'Libre'})',
-                                        style: TextStyle(
-                                          color: esExcepcion
-                                              ? Colors.orange.shade900
-                                              : Colors.grey,
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                );
-                              },
+                          Text(
+                            cantHuellas > 0
+                                ? '$cantHuellas huella(s) vinculada(s)'
+                                : 'Sin huellas enroladas',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: cantHuellas > 0
+                                  ? Colors.green.shade800
+                                  : Colors.red,
+                              fontWeight: FontWeight.bold,
                             ),
                           ),
                         ],
                       ),
+                      if (cantHuellas > 0)
+                        IconButton(
+                          icon: const Icon(
+                            Icons.restart_alt_rounded,
+                            color: Colors.red,
+                          ),
+                          tooltip: 'Resetear Huellas Digitales',
+                          onPressed: _resetearHuellasSocio,
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+
+          // 🗂️ Antes esto era una única Column con 4 secciones (Contacto,
+          // Deporte&Horarios, Grupo Familiar, Historial) separadas sólo por
+          // Divider()s dentro de un mismo scroll largo — mucha información
+          // junta y sin jerarquía visual clara. Ahora son pestañas: cada
+          // sección se ve de a una, sin perder nada de contenido.
+          final Widget panelDatos = Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+            ),
+            child: DefaultTabController(
+              length: 4,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TabBar(
+                    isScrollable: true,
+                    labelColor: Colors.teal.shade700,
+                    unselectedLabelColor: Colors.blueGrey,
+                    indicatorColor: Colors.teal,
+                    tabAlignment: TabAlignment.start,
+                    tabs: const [
+                      Tab(text: 'Contacto'),
+                      Tab(text: 'Deporte & Horarios'),
+                      Tab(text: 'Grupo Familiar'),
+                      Tab(text: 'Historial de Asistencias'),
+                    ],
+                  ),
+                  const Divider(height: 1),
+                  SizedBox(
+                    height: esMovil ? 420 : 380,
+                    child: TabBarView(
+                      children: [
+                        _buildTabContacto(esMovil),
+                        _buildTabDeporteHorarios(esMovil),
+                        _buildTabGrupoFamiliar(esMovil),
+                        _buildTabHistorialAsistencias(),
+                      ],
                     ),
                   ),
                 ],
               ),
             ),
+          );
+
+          return Column(
+            children: [
+              encabezado,
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: EdgeInsets.all(esMovil ? 16 : 40),
+                  child: esMovil
+                      ? Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            panelFotoEstado,
+                            const SizedBox(height: 24),
+                            panelDatos,
+                          ],
+                        )
+                      : Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(flex: 1, child: panelFotoEstado),
+                            const SizedBox(width: 40),
+                            Expanded(flex: 2, child: panelDatos),
+                          ],
+                        ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildTabContacto(bool esMovil) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              _buildDatoItem(
+                'Teléfono Móvil',
+                widget.socio.telefono.isNotEmpty
+                    ? widget.socio.telefono
+                    : 'No registrado',
+                Icons.phone,
+              ),
+              _buildDatoItem(
+                'Contacto de Emergencia / Email',
+                widget.socio.contactoEmergencia.isNotEmpty
+                    ? widget.socio.contactoEmergencia
+                    : 'Sin registrar',
+                Icons.email_outlined,
+              ),
+            ],
           ),
         ],
       ),
     );
   }
 
-  Widget _buildSeccionTitulo(String t) => Text(
-    t,
-    style: const TextStyle(
-      fontSize: 16,
-      fontWeight: FontWeight.bold,
-      color: Color(0xFF0A3B43),
-    ),
-  );
+  Widget _buildTabDeporteHorarios(bool esMovil) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              _buildDatoItem(
+                'Actividad Principal',
+                widget.socio.deporte.isNotEmpty
+                    ? widget.socio.deporte
+                    : 'General',
+                Icons.sports,
+              ),
+              _buildDatoItem(
+                'Frecuencia',
+                widget.socio.frecuencia.isNotEmpty
+                    ? widget.socio.frecuencia
+                    : 'Pase Libre',
+                Icons.repeat,
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              _buildDatoItem(
+                'Grado / Año Académico',
+                (widget.socio.gradoAnio?.isNotEmpty ?? false)
+                    ? widget.socio.gradoAnio!
+                    : 'No aplica',
+                Icons.school_outlined,
+              ),
+              _buildDatoItem(
+                'Bloque Horario',
+                _etiquetaHorarioTraduccion,
+                Icons.schedule_rounded,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTabGrupoFamiliar(bool esMovil) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: _buildSeccionGrupoFamiliar(),
+    );
+  }
+
+  // 💸 Antes streameaba en vivo TODO el historial del socio sin límite
+  // (StreamBuilder + .snapshots() sin .limit()) — para un socio con años de
+  // antigüedad eso es una lectura que crece sin techo y se recarga con
+  // cada apertura de la ficha. Ahora es una consulta puntual (.get()),
+  // ordenada server-side y acotada a los últimos 100 ingresos, que ya
+  // sobra para lo que esta pestaña necesita mostrar.
+  Widget _buildTabHistorialAsistencias() {
+    return Padding(
+      padding: const EdgeInsets.all(20),
+      child: FutureBuilder<QuerySnapshot>(
+        future: _firestore
+            .collection('asistencias_accesos')
+            .where('socioId', isEqualTo: widget.socio.id)
+            .orderBy('fechaHora', descending: true)
+            .limit(100)
+            .get(),
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return Center(
+              child: Text(
+                'Error al cargar asistencias: ${snapshot.error}',
+                style: const TextStyle(color: Colors.red, fontSize: 12),
+              ),
+            );
+          }
+
+          if (!snapshot.hasData) {
+            return const Center(
+              child: CircularProgressIndicator(color: Colors.teal),
+            );
+          }
+
+          final docs = snapshot.data!.docs;
+
+          if (docs.isEmpty) {
+            return const Center(
+              child: Text(
+                'Sin asistencias registradas para este socio.',
+                style: TextStyle(color: Colors.grey),
+              ),
+            );
+          }
+
+          return ListView.builder(
+            itemCount: docs.length,
+            itemBuilder: (context, idx) {
+              final data = docs[idx].data() as Map<String, dynamic>;
+              final DateTime fecha =
+                  (data['fechaHora'] as Timestamp?)?.toDate() ?? DateTime.now();
+              final bool esExcepcion = data['modo'] == 'EXCEPCION_MANUAL';
+
+              return ListTile(
+                dense: true,
+                leading: Icon(
+                  esExcepcion
+                      ? Icons.warning_amber_rounded
+                      : Icons.check_circle_outline,
+                  color: esExcepcion ? Colors.orange : Colors.green,
+                ),
+                title: Text(
+                  DateFormat('dd/MM/yyyy HH:mm').format(fecha),
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                subtitle: Text(
+                  esExcepcion
+                      ? 'Excepción: ${data['motivoExcepcion'] ?? 'Bypass Admin'}'
+                      : 'Ingreso Validado (Quedaban: ${data['creditosRestantes'] ?? 'Libre'})',
+                  style: TextStyle(
+                    color: esExcepcion ? Colors.orange.shade900 : Colors.grey,
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
 
   Widget _buildDatoItem(String e, String v, IconData i) => Expanded(
     child: Column(
@@ -1190,20 +1258,40 @@ class _SocioDetallePageState extends State<SocioDetallePage> {
     ),
   );
 
-  Widget _buildEstadoFicha(String t, String v, Color c) => Row(
+  Widget _buildEstadoFicha(
+    String t,
+    String v,
+    Color c, {
+    IconData? accionIcono,
+    String? accionTooltip,
+    VoidCallback? onAccion,
+  }) => Row(
     mainAxisAlignment: MainAxisAlignment.spaceBetween,
     children: [
       Text(t, style: const TextStyle(fontSize: 13, color: Colors.blueGrey)),
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        decoration: BoxDecoration(
-          color: c.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(20),
-        ),
-        child: Text(
-          v,
-          style: TextStyle(color: c, fontWeight: FontWeight.bold, fontSize: 12),
-        ),
+      Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: c.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Text(
+              v,
+              style: TextStyle(color: c, fontWeight: FontWeight.bold, fontSize: 12),
+            ),
+          ),
+          if (onAccion != null) ...[
+            const SizedBox(width: 4),
+            IconButton(
+              icon: Icon(accionIcono, size: 18, color: Colors.blueGrey),
+              tooltip: accionTooltip,
+              visualDensity: VisualDensity.compact,
+              onPressed: onAccion,
+            ),
+          ],
+        ],
       ),
     ],
   );

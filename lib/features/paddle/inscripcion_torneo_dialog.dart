@@ -3,6 +3,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'torneo_categorias.dart';
+import '../../shared/fila_responsiva.dart';
+import '../../shared/mercado_pago_dialog.dart';
 
 class InscripcionTorneoDialog extends StatefulWidget {
   final String torneoId;
@@ -228,6 +230,19 @@ class _InscripcionTorneoDialogState extends State<InscripcionTorneoDialog> {
         );
       }
 
+      // 💳 Igual criterio que POS/canchas/cuotas: la inscripción ya quedó
+      // registrada arriba, y el QR de MP se muestra como verificación en
+      // vivo del cobro, sin bloquear la confirmación de la pareja.
+      if (_metodoPago == 'Mercado Pago' &&
+          ventaIdCreada != null &&
+          mounted) {
+        await mostrarSelectorCobroMercadoPago(
+          context,
+          ruta: 'ventas_buffet/$ventaIdCreada',
+          concepto: 'Inscripción Torneo: ${widget.nombreTorneo}',
+        );
+      }
+
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
       setState(() => _guardando = false);
@@ -343,62 +358,46 @@ class _InscripcionTorneoDialogState extends State<InscripcionTorneoDialog> {
                   },
                   validator: (v) => v == null || v.isEmpty ? 'Requerido' : null,
                 ),
-                Row(
-                  children: [
-                    Expanded(
-                      flex: 2,
-                      child: TextFormField(
-                        controller: _nombre1Controller,
-                        readOnly: _esSocio1,
-                        decoration: const InputDecoration(
-                          labelText: 'Nombre Completo',
-                        ),
-                        validator: (v) =>
-                            v == null || v.isEmpty ? 'Requerido' : null,
+                filaResponsiva(
+                  flexes: const [2, 1],
+                  breakpoint: 420,
+                  [
+                    TextFormField(
+                      controller: _nombre1Controller,
+                      readOnly: _esSocio1,
+                      decoration: const InputDecoration(
+                        labelText: 'Nombre Completo',
                       ),
+                      validator: (v) =>
+                          v == null || v.isEmpty ? 'Requerido' : null,
                     ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      flex: 1,
-                      child: DropdownButtonFormField<String>(
-                        value: _categoria1,
-                        decoration: const InputDecoration(
-                          labelText: 'Categoría',
-                        ),
-                        items: _categoriasPadel
-                            .map(
-                              (c) => DropdownMenuItem(value: c, child: Text(c)),
-                            )
-                            .toList(),
-                        onChanged: (v) => setState(() => _categoria1 = v!),
-                      ),
+                    DropdownButtonFormField<String>(
+                      value: _categoria1,
+                      decoration: const InputDecoration(labelText: 'Categoría'),
+                      items: _categoriasPadel
+                          .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                          .toList(),
+                      onChanged: (v) => setState(() => _categoria1 = v!),
                     ),
                   ],
                 ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextFormField(
-                        controller: _telefono1Controller,
-                        readOnly: _esSocio1,
-                        decoration: const InputDecoration(
-                          labelText: 'Teléfono / WhatsApp',
-                        ),
-                        validator: (v) =>
-                            v == null || v.isEmpty ? 'Requerido' : null,
-                      ),
+                filaResponsiva(breakpoint: 420, [
+                  TextFormField(
+                    controller: _telefono1Controller,
+                    readOnly: _esSocio1,
+                    decoration: const InputDecoration(
+                      labelText: 'Teléfono / WhatsApp',
                     ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: TextFormField(
-                        controller: _club1Controller,
-                        decoration: const InputDecoration(
-                          labelText: 'Club / Localidad',
-                        ),
-                      ),
+                    validator: (v) =>
+                        v == null || v.isEmpty ? 'Requerido' : null,
+                  ),
+                  TextFormField(
+                    controller: _club1Controller,
+                    decoration: const InputDecoration(
+                      labelText: 'Club / Localidad',
                     ),
-                  ],
-                ),
+                  ),
+                ]),
                 const SizedBox(height: 20),
 
                 // JUGADOR 2
@@ -428,62 +427,46 @@ class _InscripcionTorneoDialogState extends State<InscripcionTorneoDialog> {
                   },
                   validator: (v) => v == null || v.isEmpty ? 'Requerido' : null,
                 ),
-                Row(
-                  children: [
-                    Expanded(
-                      flex: 2,
-                      child: TextFormField(
-                        controller: _nombre2Controller,
-                        readOnly: _esSocio2,
-                        decoration: const InputDecoration(
-                          labelText: 'Nombre Completo',
-                        ),
-                        validator: (v) =>
-                            v == null || v.isEmpty ? 'Requerido' : null,
+                filaResponsiva(
+                  flexes: const [2, 1],
+                  breakpoint: 420,
+                  [
+                    TextFormField(
+                      controller: _nombre2Controller,
+                      readOnly: _esSocio2,
+                      decoration: const InputDecoration(
+                        labelText: 'Nombre Completo',
                       ),
+                      validator: (v) =>
+                          v == null || v.isEmpty ? 'Requerido' : null,
                     ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      flex: 1,
-                      child: DropdownButtonFormField<String>(
-                        value: _categoria2,
-                        decoration: const InputDecoration(
-                          labelText: 'Categoría',
-                        ),
-                        items: _categoriasPadel
-                            .map(
-                              (c) => DropdownMenuItem(value: c, child: Text(c)),
-                            )
-                            .toList(),
-                        onChanged: (v) => setState(() => _categoria2 = v!),
-                      ),
+                    DropdownButtonFormField<String>(
+                      value: _categoria2,
+                      decoration: const InputDecoration(labelText: 'Categoría'),
+                      items: _categoriasPadel
+                          .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                          .toList(),
+                      onChanged: (v) => setState(() => _categoria2 = v!),
                     ),
                   ],
                 ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextFormField(
-                        controller: _telefono2Controller,
-                        readOnly: _esSocio2,
-                        decoration: const InputDecoration(
-                          labelText: 'Teléfono / WhatsApp',
-                        ),
-                        validator: (v) =>
-                            v == null || v.isEmpty ? 'Requerido' : null,
-                      ),
+                filaResponsiva(breakpoint: 420, [
+                  TextFormField(
+                    controller: _telefono2Controller,
+                    readOnly: _esSocio2,
+                    decoration: const InputDecoration(
+                      labelText: 'Teléfono / WhatsApp',
                     ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: TextFormField(
-                        controller: _club2Controller,
-                        decoration: const InputDecoration(
-                          labelText: 'Club / Localidad',
-                        ),
-                      ),
+                    validator: (v) =>
+                        v == null || v.isEmpty ? 'Requerido' : null,
+                  ),
+                  TextFormField(
+                    controller: _club2Controller,
+                    decoration: const InputDecoration(
+                      labelText: 'Club / Localidad',
                     ),
-                  ],
-                ),
+                  ),
+                ]),
                 const SizedBox(height: 16),
 
                 // 🚨 Validación de categoría: antes nada impedía que un

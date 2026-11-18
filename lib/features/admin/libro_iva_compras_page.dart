@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import '../../shared/csv_utils.dart';
 import '../../shared/csv_download.dart';
+import '../../shared/libro_iva_digital_export.dart';
 
 class LibroIvaComprasPage extends StatefulWidget {
   const LibroIvaComprasPage({super.key});
@@ -32,6 +33,7 @@ class _LibroIvaComprasPageState extends State<LibroIvaComprasPage> {
   );
 
   List<QueryDocumentSnapshot<Object?>>? _ultimaListaCargada;
+  bool _exportandoLibroIva = false;
 
   @override
   Widget build(BuildContext context) {
@@ -60,6 +62,27 @@ class _LibroIvaComprasPageState extends State<LibroIvaComprasPage> {
             icon: const Icon(Icons.download_rounded, size: 20),
             label: const Text(
               'Exportar a CSV / Excel',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+          const SizedBox(width: 8),
+          OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.white,
+              side: const BorderSide(color: Colors.white54),
+            ),
+            onPressed: _ultimaListaCargada == null || _exportandoLibroIva
+                ? null
+                : () => _exportarLibroIvaDigital(context, _ultimaListaCargada!),
+            icon: _exportandoLibroIva
+                ? const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  )
+                : const Icon(Icons.description_outlined, size: 20),
+            label: const Text(
+              'Libro IVA Digital (TXT)',
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
           ),
@@ -107,9 +130,22 @@ class _LibroIvaComprasPageState extends State<LibroIvaComprasPage> {
                   // (corre dentro del build() del StreamBuilder) — se
                   // difiere al post-frame para que el botón "Exportar CSV"
                   // del AppBar reaccione cuando llegan datos reales.
+                  //
+                  // 🐛 Antes comparaba sólo por longitud: si el usuario
+                  // cambiaba el rango de fechas mientras el callback estaba
+                  // en cola, se podía exportar una lista de un período
+                  // distinto al que se ve en pantalla. Ahora sólo se aplica
+                  // si el rango con el que se calculó sigue vigente.
+                  final DateTime fechaInicioCalculo = _fechaInicio;
+                  final DateTime fechaFinCalculo = _fechaFin;
                   if (_ultimaListaCargada?.length != docs.length) {
                     WidgetsBinding.instance.addPostFrameCallback((_) {
-                      if (mounted) setState(() => _ultimaListaCargada = docs);
+                      if (!mounted) return;
+                      if (_fechaInicio != fechaInicioCalculo ||
+                          _fechaFin != fechaFinCalculo) {
+                        return;
+                      }
+                      setState(() => _ultimaListaCargada = docs);
                     });
                   } else {
                     _ultimaListaCargada = docs;
@@ -184,7 +220,16 @@ class _LibroIvaComprasPageState extends State<LibroIvaComprasPage> {
                                       'No hay comprobantes cargados en el período seleccionado.',
                                     ),
                                   )
-                                : SingleChildScrollView(
+                                : LayoutBuilder(
+                                    builder: (context, constraints) {
+                                      // 📱 Debajo de este ancho la tabla de
+                                      // ~12 columnas sólo se veía vía scroll
+                                      // horizontal, ilegible: se reemplaza
+                                      // por una lista de tarjetas.
+                                      if (constraints.maxWidth < 700) {
+                                        return _buildListaTarjetas(docs);
+                                      }
+                                      return SingleChildScrollView(
                                     scrollDirection: Axis.vertical,
                                     child: SingleChildScrollView(
                                       scrollDirection: Axis.horizontal,
@@ -423,6 +468,8 @@ class _LibroIvaComprasPageState extends State<LibroIvaComprasPage> {
                                         }).toList(),
                                       ),
                                     ),
+                                  );
+                                    },
                                   ),
                           ),
                         ),
@@ -435,6 +482,82 @@ class _LibroIvaComprasPageState extends State<LibroIvaComprasPage> {
           ],
         ),
       ),
+    );
+  }
+
+  // 📱 Vista de tarjetas para pantallas angostas — reemplaza la tabla de
+  // ~12 columnas que sólo se veía haciendo scroll horizontal. Muestra los
+  // campos principales siempre visibles y el resto (desgloses por
+  // alícuota/percepción) en un bloque secundario más chico debajo.
+  Widget _buildListaTarjetas(List<QueryDocumentSnapshot> docs) {
+    return ListView.separated(
+      itemCount: docs.length,
+      separatorBuilder: (_, __) => const Divider(height: 20),
+      itemBuilder: (context, i) {
+        final data = docs[i].data() as Map<String, dynamic>;
+        final DateTime fecha = (data['fechaEmision'] as Timestamp).toDate();
+        final double totalComp = (data['montoTotal'] as num?)?.toDouble() ?? 0.0;
+        final double ivaT = (data['ivaTotal'] as num?)?.toDouble() ?? 0.0;
+        final double pIIBB =
+            (data['percepcionIIBBTotal'] as num?)?.toDouble() ??
+            (data['percepcionIIBB'] as num?)?.toDouble() ??
+            0.0;
+        final double pOtras =
+            ((data['percepcionIVA'] as num?)?.toDouble() ?? 0.0) +
+            ((data['percepcionGanancias'] as num?)?.toDouble() ?? 0.0);
+
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    DateFormat('dd/MM/yyyy').format(fecha),
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  Text(
+                    _currencyFormat.format(totalComp),
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                data['razonSocialProveedor'] ?? '-',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              Text(
+                '${data['tipoComprobante'] ?? ''} ${data['numeroComprobante'] ?? ''} • CUIT ${data['cuitProveedor'] ?? '-'}',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 4),
+              Wrap(
+                spacing: 12,
+                runSpacing: 4,
+                children: [
+                  Text(
+                    'IVA: ${_currencyFormat.format(ivaT)}',
+                    style: const TextStyle(fontSize: 12, color: Colors.blue),
+                  ),
+                  if (pIIBB > 0)
+                    Text(
+                      'Perc. IIBB: ${_currencyFormat.format(pIIBB)}',
+                      style: const TextStyle(fontSize: 12, color: Colors.orange),
+                    ),
+                  if (pOtras > 0)
+                    Text(
+                      'Perc. IVA/Gan: ${_currencyFormat.format(pOtras)}',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -548,6 +671,101 @@ class _LibroIvaComprasPageState extends State<LibroIvaComprasPage> {
         ),
       ),
     );
+  }
+
+  // 🧾 EXPORT LIBRO DE IVA DIGITAL (formato ARCA, ex-CITI) — ver
+  // lib/shared/libro_iva_digital_export.dart para la especificación de
+  // campos. Sólo incluye Factura A/B con CAE del proveedor discriminado;
+  // 'Ticket X'/'Interno' no son comprobantes fiscales de compra y no
+  // forman parte del Libro de IVA.
+  Future<void> _exportarLibroIvaDigital(
+    BuildContext context,
+    List<QueryDocumentSnapshot<Object?>> docs,
+  ) async {
+    setState(() => _exportandoLibroIva = true);
+    try {
+      final List<ComprobanteCompraIva> comprobantes = [];
+
+      for (final doc in docs) {
+        final data = doc.data() as Map<String, dynamic>;
+        final String tipoTexto = data['tipoComprobante']?.toString() ?? '';
+        final int? codigoTipo = codigoComprobantePorTexto(tipoTexto);
+        if (codigoTipo == null) continue; // Ticket X / Interno / etc.
+
+        final String numeroCompleto = data['numeroComprobante']?.toString() ?? '';
+        final partes = numeroCompleto.split('-');
+        if (partes.length != 2) continue; // formato inesperado, se omite
+
+        final int? puntoVenta = int.tryParse(partes[0]);
+        final int? numero = int.tryParse(partes[1]);
+        if (puntoVenta == null || numero == null) continue;
+
+        final DateTime? fecha = (data['fechaEmision'] as Timestamp?)?.toDate();
+        if (fecha == null) continue;
+
+        final double n21 = (data['netoGravado21'] as num?)?.toDouble() ?? 0.0;
+        final double n105 = (data['netoGravado105'] as num?)?.toDouble() ?? 0.0;
+        final double n27 = (data['netoGravado27'] as num?)?.toDouble() ?? 0.0;
+
+        comprobantes.add(
+          ComprobanteCompraIva(
+            fecha: fecha,
+            tipoComprobante: codigoTipo,
+            puntoVenta: puntoVenta,
+            numero: numero,
+            cuitProveedor: data['cuitProveedor']?.toString() ?? '',
+            razonSocialProveedor: data['razonSocialProveedor']?.toString() ?? '',
+            total: (data['montoTotal'] as num?)?.toDouble() ?? 0.0,
+            exento: (data['exento'] as num?)?.toDouble() ?? 0.0,
+            percepcionIVA: (data['percepcionIVA'] as num?)?.toDouble() ?? 0.0,
+            percepcionGanancias: (data['percepcionGanancias'] as num?)?.toDouble() ?? 0.0,
+            percepcionIIBB: (data['percepcionIIBBTotal'] as num?)?.toDouble() ??
+                (data['percepcionIIBB'] as num?)?.toDouble() ??
+                0.0,
+            creditoFiscal: (data['ivaTotal'] as num?)?.toDouble() ?? 0.0,
+            netoPorAlicuota: {21.0: n21, 10.5: n105, 27.0: n27},
+          ),
+        );
+      }
+
+      if (comprobantes.isEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'No hay comprobantes Factura A/B con formato de N° válido '
+                '(PPPP-NNNNNNNN) en este período.',
+              ),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+        return;
+      }
+
+      final String sufijo = DateFormat('yyyy-MM').format(_fechaInicio);
+      descargarCsv('LIBRO_IVA_DIGITAL_COMPRAS_CBTE_$sufijo.txt', generarComprasCbte(comprobantes));
+      descargarCsv('LIBRO_IVA_DIGITAL_COMPRAS_ALICUOTAS_$sufijo.txt', generarComprasAlicuotas(comprobantes));
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '✅ Generados ${comprobantes.length} comprobante(s) — revisá los campos antes de importarlos al Portal IVA.',
+            ),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No se pudo generar el Libro de IVA: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _exportandoLibroIva = false);
+    }
   }
 
   // 📥 EXPORTACIÓN CSV REAL — antes esto era un stub que sólo mostraba un

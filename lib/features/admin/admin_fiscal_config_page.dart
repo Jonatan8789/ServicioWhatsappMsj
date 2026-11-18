@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import '../../services/auditoria_service.dart';
 
 class ConfiguracionFiscalPage extends StatefulWidget {
   const ConfiguracionFiscalPage({Key? key}) : super(key: key);
@@ -30,12 +31,19 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
   bool _modoProduccionMp = false;
   bool _cargandoMp = true;
 
+  // 📲 CONTROLES WHATSAPP (destino de las notificaciones a "el admin")
+  final _telefonoAdminWhatsappCtrl = TextEditingController();
+  bool _cargandoWhatsapp = true;
+  bool _recordatoriosActivos = false;
+  bool _guardandoToggleRecordatorios = false;
+
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _cargarConfiguracionArca();
     _cargarConfiguracionMP();
+    _cargarConfiguracionWhatsapp();
   }
 
   @override
@@ -46,7 +54,85 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
     _alicuotaIvaCtrl.dispose();
     _accessTokenMpCtrl.dispose();
     _publicKeyMpCtrl.dispose();
+    _telefonoAdminWhatsappCtrl.dispose();
     super.dispose();
+  }
+
+  // =========================================================================
+  // 📲 LÓGICA WHATSAPP (teléfono de administrador)
+  // =========================================================================
+  Future<void> _cargarConfiguracionWhatsapp() async {
+    try {
+      final doc = await _firestore
+          .collection('configuraciones_fiscales')
+          .doc('whatsapp_reglas')
+          .get();
+      if (doc.exists) {
+        _telefonoAdminWhatsappCtrl.text =
+            (doc.data()!['telefonoAdmin'] ?? '').toString();
+        _recordatoriosActivos = doc.data()!['recordatoriosActivos'] == true;
+      }
+    } catch (e) {
+      print("Error cargando WhatsApp: $e");
+    } finally {
+      setState(() => _cargandoWhatsapp = false);
+    }
+  }
+
+  // 🔌 Se guarda aparte del botón "Guardar WhatsApp" para que prender/apagar
+  // sea inmediato (sin tener que tocar el teléfono ni apretar guardar), y
+  // con merge:true para no pisar el resto de la config al cambiarlo.
+  Future<void> _cambiarToggleRecordatorios(bool valor) async {
+    setState(() => _guardandoToggleRecordatorios = true);
+    try {
+      await _firestore
+          .collection('configuraciones_fiscales')
+          .doc('whatsapp_reglas')
+          .set({'recordatoriosActivos': valor}, SetOptions(merge: true));
+      if (mounted) setState(() => _recordatoriosActivos = valor);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('❌ Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _guardandoToggleRecordatorios = false);
+    }
+  }
+
+  Future<void> _guardarConfiguracionWhatsapp() async {
+    try {
+      await _firestore
+          .collection('configuraciones_fiscales')
+          .doc('whatsapp_reglas')
+          .set({
+            'telefonoAdmin': _telefonoAdminWhatsappCtrl.text.trim(),
+            'ultimaActualizacion': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+      await registrarAuditoria(
+        accion: 'guardar_configuracion_whatsapp',
+        entidad: 'configuraciones_fiscales',
+        entidadId: 'whatsapp_reglas',
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            backgroundColor: Colors.green,
+            content: Text('✅ Teléfono de WhatsApp guardado correctamente.'),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: Colors.red,
+            content: Text('❌ Error al guardar WhatsApp: $e'),
+          ),
+        );
+      }
+    }
   }
 
   // =========================================================================
@@ -88,6 +174,15 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
                 double.tryParse(_alicuotaIvaCtrl.text.trim()) ?? 21,
             'ultimaActualizacion': FieldValue.serverTimestamp(),
           });
+      // 📋 No se registran CUIT/credenciales en el detalle — sólo que la
+      // config cambió y en qué modo, para no filtrar datos sensibles al
+      // propio log de auditoría.
+      await registrarAuditoria(
+        accion: 'guardar_configuracion_arca',
+        entidad: 'configuraciones_fiscales',
+        entidadId: 'arca_reglas',
+        detalle: {'modoProduccion': _modoProduccionArca},
+      );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -98,12 +193,14 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
         );
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          backgroundColor: Colors.red,
-          content: Text('❌ Error al guardar ARCA: $e'),
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: Colors.red,
+            content: Text('❌ Error al guardar ARCA: $e'),
+          ),
+        );
+      }
     }
   }
 
@@ -120,6 +217,7 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
       });
 
       if (resp.data['success'] == true) {
+        if (!mounted) return;
         showDialog(
           context: context,
           builder: (c) => AlertDialog(
@@ -145,14 +243,16 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
         throw Exception(resp.data['error']);
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          backgroundColor: Colors.red.shade900,
-          content: Text('⚠️ Falló la prueba con ARCA: $e'),
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: Colors.red.shade900,
+            content: Text('⚠️ Falló la prueba con ARCA: $e'),
+          ),
+        );
+      }
     } finally {
-      setState(() => _probandoArca = false);
+      if (mounted) setState(() => _probandoArca = false);
     }
   }
 
@@ -189,6 +289,12 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
             'modoProduccion': _modoProduccionMp,
             'ultimaActualizacion': FieldValue.serverTimestamp(),
           });
+      await registrarAuditoria(
+        accion: 'guardar_configuracion_mercadopago',
+        entidad: 'configuraciones_fiscales',
+        entidadId: 'mp_reglas',
+        detalle: {'modoProduccion': _modoProduccionMp},
+      );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -199,12 +305,14 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
         );
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          backgroundColor: Colors.red,
-          content: Text('❌ Error al guardar Mercado Pago: $e'),
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: Colors.red,
+            content: Text('❌ Error al guardar Mercado Pago: $e'),
+          ),
+        );
+      }
     }
   }
 
@@ -226,12 +334,214 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
           tabs: const [
             Tab(icon: Icon(Icons.receipt_long_rounded), text: 'ARCA / AFIP'),
             Tab(icon: Icon(Icons.qr_code_2_rounded), text: 'Mercado Pago'),
+            Tab(icon: Icon(Icons.chat_rounded), text: 'WhatsApp'),
           ],
         ),
       ),
       body: TabBarView(
         controller: _tabController,
-        children: [_buildFormularioArca(), _buildFormularioMercadoPago()],
+        children: [
+          _buildFormularioArca(),
+          _buildFormularioMercadoPago(),
+          _buildFormularioWhatsapp(),
+        ],
+      ),
+    );
+  }
+
+  // FORMULARIO WHATSAPP
+  Widget _buildFormularioWhatsapp() {
+    if (_cargandoWhatsapp) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 600),
+          child: Column(
+            children: [
+              Card(
+                elevation: 2,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Notificaciones por WhatsApp',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF0F172A),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Número al que se avisa cuando un socio adjunta un comprobante de pago desde su portal (con el código de país, sin espacios ni símbolos — ej: 5491112345678).',
+                        style: TextStyle(color: Colors.grey, fontSize: 12),
+                      ),
+                      const Divider(height: 24),
+                      TextField(
+                        controller: _telefonoAdminWhatsappCtrl,
+                        keyboardType: TextInputType.phone,
+                        decoration: const InputDecoration(
+                          labelText: 'Teléfono del Administrador',
+                          border: OutlineInputBorder(),
+                          prefixIcon: Icon(Icons.phone_android_rounded),
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF0F172A),
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                          ),
+                          onPressed: _guardarConfiguracionWhatsapp,
+                          icon: const Icon(Icons.save, color: Colors.white),
+                          label: const Text(
+                            'Guardar WhatsApp',
+                            style: TextStyle(color: Colors.white),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              _buildCardRecordatorios(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  bool _enviandoRecordatorios = false;
+
+  // 📲 RECORDATORIOS AUTOMÁTICOS: cuota pendiente, apto médico vencido/por
+  // vencer y reservas de mañana. Corren solos todos los días a las 10:00 vía
+  // Cloud Function programada; este botón dispara la misma lógica al toque
+  // para poder probarla sin esperar al cron.
+  Future<void> _enviarRecordatoriosAhora() async {
+    setState(() => _enviandoRecordatorios = true);
+    try {
+      final callable = FirebaseFunctions.instance.httpsCallable(
+        'enviarRecordatoriosManual',
+      );
+      final resp = await callable.call();
+      if (!mounted) return;
+      if (resp.data['success'] == true && resp.data['desactivado'] == true) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('⏸️ El interruptor está apagado — no se mandó nada. Activalo arriba primero.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      } else if (resp.data['success'] == true) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '✅ Recordatorios enviados — Cuotas: ${resp.data['cuotas']}, '
+              'Aptos médicos: ${resp.data['aptos']}, Reservas: ${resp.data['reservas']}.',
+            ),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ Error: ${resp.data['error'] ?? 'desconocido'}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('❌ Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _enviandoRecordatorios = false);
+    }
+  }
+
+  Widget _buildCardRecordatorios() {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Recordatorios Automáticos',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF0F172A),
+              ),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'Todos los días a las 10:00 se avisa solo por WhatsApp a socios con cuota pendiente, apto médico vencido o por vencer (próximos 15 días), y a quienes tengan una reserva de cancha para el día siguiente.',
+              style: TextStyle(color: Colors.grey, fontSize: 12),
+            ),
+            const Divider(height: 24),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _recordatoriosActivos,
+              activeColor: Colors.green,
+              onChanged: _guardandoToggleRecordatorios ? null : _cambiarToggleRecordatorios,
+              title: const Text(
+                'Recordatorios activados',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+              subtitle: Text(
+                _recordatoriosActivos
+                    ? 'Se están enviando mensajes reales a socios. Apagalo si todavía estás probando el sistema.'
+                    : 'Apagado: no se manda ningún WhatsApp automático (ni por el cron ni por el botón de prueba de abajo). Ideal mientras el cliente prueba el sistema.',
+                style: const TextStyle(fontSize: 11.5),
+              ),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.indigo,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                ),
+                onPressed: _enviandoRecordatorios ? null : _enviarRecordatoriosAhora,
+                icon: _enviandoRecordatorios
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.send_rounded, size: 18),
+                label: const Text('Enviar Recordatorios Ahora (Prueba)'),
+              ),
+            ),
+            if (!_recordatoriosActivos)
+              const Padding(
+                padding: EdgeInsets.only(top: 6),
+                child: Text(
+                  'El botón de arriba no manda nada mientras el interruptor esté apagado.',
+                  style: TextStyle(fontSize: 11, color: Colors.orange),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

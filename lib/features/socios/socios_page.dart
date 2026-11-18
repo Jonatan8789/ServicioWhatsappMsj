@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'socio_model.dart';
 import '../cuentas_corrientes/cuenta_corriente_page.dart';
 import '../../pages/plan_pago_dialog.dart';
@@ -28,13 +29,33 @@ class SociosPage extends StatefulWidget {
 class _SociosPageState extends State<SociosPage> {
   String _terminoBusqueda = "";
 
+  // 💸 Antes esta pantalla streameaba en vivo TODA la colección de socios
+  // — cualquier pago, check-in o cambio de saldo de CUALQUIER socio
+  // recargaba la lectura completa acá mientras el padrón estuviera abierto.
+  // Ahora se trae una vez al entrar (cada alta/edición vuelve por
+  // 'onVolver' y recrea esta pantalla desde cero, así que siempre refleja
+  // lo último) y "Actualizar" permite forzarlo sin salir y volver a entrar.
+  List<QueryDocumentSnapshot>? _sociosDocs;
+
+  Future<void> _cargarSocios() async {
+    setState(() => _sociosDocs = null);
+    final snap = await FirebaseFirestore.instance.collection('socios').get();
+    if (mounted) setState(() => _sociosDocs = snap.docs);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _cargarSocios();
+  }
+
   void _abrirRefinanciacionSocio(SocioModel socio) async {
     final res = await showDialog(
       context: context,
       builder: (context) => PlanPagoDialog(socio: socio),
     );
     if (res == true) {
-      setState(() {});
+      _cargarSocios();
     }
   }
 
@@ -145,42 +166,50 @@ class _SociosPageState extends State<SociosPage> {
           ),
           const SizedBox(height: 30),
 
-          TextField(
-            decoration: InputDecoration(
-              hintText: 'Buscar por Nombre, DNI o Número de Socio...',
-              prefixIcon: const Icon(Icons.search, color: Colors.blueGrey),
-              filled: true,
-              fillColor: Colors.white,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide.none,
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  decoration: InputDecoration(
+                    hintText: 'Buscar por Nombre, DNI o Número de Socio...',
+                    prefixIcon: const Icon(Icons.search, color: Colors.blueGrey),
+                    filled: true,
+                    fillColor: Colors.white,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                  onChanged: (valor) {
+                    setState(() {
+                      _terminoBusqueda = valor.toLowerCase();
+                    });
+                  },
+                ),
               ),
-            ),
-            onChanged: (valor) {
-              setState(() {
-                _terminoBusqueda = valor.toLowerCase();
-              });
-            },
+              IconButton(
+                tooltip: 'Actualizar padrón',
+                icon: const Icon(Icons.refresh_rounded),
+                onPressed: _cargarSocios,
+              ),
+            ],
           ),
           const SizedBox(height: 20),
 
           Expanded(
-            child: StreamBuilder<QuerySnapshot>(
-              stream: FirebaseFirestore.instance
-                  .collection('socios')
-                  .snapshots(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
+            child: Builder(
+              builder: (context) {
+                if (_sociosDocs == null) {
                   return const Center(child: CircularProgressIndicator());
                 }
 
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                if (_sociosDocs!.isEmpty) {
                   return const Center(
                     child: Text('Aún no hay socios registrados.'),
                   );
                 }
 
-                final sociosFiltrados = snapshot.data!.docs
+                final sociosFiltrados = _sociosDocs!
                     .map((doc) => SocioModel.fromFirestore(doc))
                     .where((socio) {
                       // 🚨 Compara también sin ceros a la izquierda: los
@@ -217,10 +246,9 @@ class _SociosPageState extends State<SociosPage> {
                   itemCount: sociosFiltrados.length,
                   itemBuilder: (context, index) {
                     final socio = sociosFiltrados[index];
-                    final hoy = DateTime.now();
-                    final bool aptoValido =
-                        socio.vencimientoAptoMedico != null &&
-                        socio.vencimientoAptoMedico!.isAfter(hoy);
+                    final bool aptoValido = vencimientoVigente(
+                      socio.vencimientoAptoMedico,
+                    );
 
                     final bool tieneDeuda = socio.saldoCuentaCorriente != 0;
 
@@ -242,24 +270,21 @@ class _SociosPageState extends State<SociosPage> {
                           child: socio.fotoUrl.isNotEmpty
                               ? ClipRRect(
                                   borderRadius: BorderRadius.circular(24),
-                                  child: Image.network(
-                                    socio.fotoUrl,
+                                  child: CachedNetworkImage(
+                                    imageUrl: socio.fotoUrl,
                                     width: 48,
                                     height: 48,
                                     fit: BoxFit.cover,
-                                    loadingBuilder: (context, child, progress) {
-                                      if (progress == null) return child;
-                                      return const CircularProgressIndicator(
-                                        color: Colors.teal,
-                                        strokeWidth: 2,
-                                      );
-                                    },
-                                    errorBuilder:
-                                        (context, error, stackTrace) =>
-                                            const Icon(
-                                              Icons.person,
-                                              color: Colors.teal,
-                                            ),
+                                    placeholder: (context, url) =>
+                                        const CircularProgressIndicator(
+                                          color: Colors.teal,
+                                          strokeWidth: 2,
+                                        ),
+                                    errorWidget: (context, url, error) =>
+                                        const Icon(
+                                          Icons.person,
+                                          color: Colors.teal,
+                                        ),
                                   ),
                                 )
                               : const Icon(Icons.person, color: Colors.teal),

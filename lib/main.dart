@@ -6,6 +6,8 @@ import 'features/auth/auth_services.dart';
 import 'features/socios/socio_login_page.dart';
 import 'features/socios/socio_dashboard_page.dart';
 import 'features/profesores/profesor_dashboard_page.dart';
+import 'features/dashboard/dashboard_page.dart';
+import 'shared/inactivity_guard.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'theme/app_theme.dart';
@@ -16,6 +18,18 @@ void main() async {
 
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
+    );
+
+    // 📴 OFFLINE-FIRST: antes esto quedaba en lo que el SDK trae por
+    // defecto (persistencia ON en Android/iOS, OFF en Web) sin que nadie lo
+    // dejara explícito en código — control de acceso y el portal de
+    // profesores necesitan seguir mostrando datos (y poniendo en cola las
+    // escrituras) en vestuarios/natatorio con mala señal. cacheSizeBytes
+    // ilimitado para que no se empiece a purgar el cache local en el medio
+    // de un turno sin conexión.
+    FirebaseFirestore.instance.settings = const Settings(
+      persistenceEnabled: true,
+      cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
     );
   } catch (e) {
     debugPrint('🚨 Error crítico inicializando Firebase: $e');
@@ -42,7 +56,7 @@ class MiClubApp extends StatelessWidget {
             return const FlujoMovilPorRol();
           }
           // Si es pantalla ancha (PC / Web Admin)
-          return const LoginPage();
+          return const _FlujoEscritorioPorRol();
         },
       ),
 
@@ -105,6 +119,63 @@ class FlujoMovilPorRol extends StatelessWidget {
             // Default histórico: cualquier otro rol (incluido 'socio') pasa
             // por el flujo de socio, igual que antes de este cambio.
             return _FlujoMovilSocio(uid: user.uid);
+          },
+        );
+      },
+    );
+  }
+}
+
+// 💻 FLUJO AUTOMÁTICO DE ESCRITORIO — antes esta rama mostraba LoginPage()
+// directo, sin fijarse si ya había una sesión de Firebase válida. Firebase
+// Web ya persiste la sesión sola (Persistence.LOCAL, el default), pero como
+// acá nunca se chequeaba, cualquier refresh de página volvía a pedir login
+// aunque la sesión siguiera viva. Ahora se reacciona a authStateChanges()
+// igual que ya hacía el flujo móvil, y el dashboard queda envuelto en
+// InactivityGuard para el cierre automático por inactividad.
+class _FlujoEscritorioPorRol extends StatelessWidget {
+  const _FlujoEscritorioPorRol();
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return _cargandoMovil();
+        }
+
+        if (!snapshot.hasData || snapshot.data == null) {
+          return const LoginPage();
+        }
+
+        final user = snapshot.data!;
+
+        return FutureBuilder<String>(
+          future: AuthService().obtenerRolUsuario(user.uid),
+          builder: (context, rolSnap) {
+            if (!rolSnap.hasData) return _cargandoMovil();
+
+            final String rol = rolSnap.data!;
+
+            if (rol == 'bloqueado') {
+              return _BloqueadoMovilScaffold(uid: user.uid);
+            }
+
+            if (rol == 'profe') {
+              return _FlujoMovilProfesor(uid: user.uid);
+            }
+
+            if (rol == 'socio') {
+              return _FlujoMovilSocio(uid: user.uid);
+            }
+
+            // Cualquier rol de staff (admin, cajero, y los que se agreguen)
+            // va al dashboard completo, con cierre automático por
+            // inactividad.
+            return InactivityGuard(
+              child: DashboardPage(rolUsuario: rol),
+            );
           },
         );
       },

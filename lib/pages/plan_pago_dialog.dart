@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import 'package:natatorio_app/features/socios/socio_model.dart';
 
@@ -220,14 +221,41 @@ Agradecemos tu compromiso para mantener tu cuenta al día.
 ''';
 
     try {
-      await http.post(
+      // 🚨 El bridge de WhatsApp exige un ID token de admin desde que se le
+      // agregó autenticación — esta llamada nunca mandaba el header y
+      // fallaba en silencio (401) desde entonces.
+      final token = await FirebaseAuth.instance.currentUser?.getIdToken();
+      final resp = await http.post(
         Uri.parse('https://servicio-whatsapp-oqua.onrender.com/send-whatsapp'),
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          'Content-Type': 'application/json',
+          if (token != null) 'Authorization': 'Bearer $token',
+        },
         body: jsonEncode({'phone': telefono, 'message': mensaje}),
       );
+      if (resp.statusCode != 200) {
+        debugPrint('WhatsApp no enviado (${resp.statusCode}): ${resp.body}');
+        _avisarFalloWhatsapp();
+      }
     } catch (e) {
       debugPrint('Error al enviar WhatsApp: $e');
+      _avisarFalloWhatsapp();
     }
+  }
+
+  // 🚨 Antes un envío fallido sólo quedaba en debugPrint (invisible en
+  // release) — el staff nunca se enteraba de que el socio no recibió la
+  // confirmación del plan de refinanciación.
+  void _avisarFalloWhatsapp() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          '⚠️ No se pudo enviar la confirmación del plan por WhatsApp.',
+        ),
+        backgroundColor: Colors.orange,
+      ),
+    );
   }
 
   @override

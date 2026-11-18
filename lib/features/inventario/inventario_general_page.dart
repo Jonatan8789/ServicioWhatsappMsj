@@ -504,13 +504,71 @@ class _InventarioGeneralPageState extends State<InventarioGeneralPage> {
           style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
         ),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(32.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              '🗃️ Central Única de Inventario',
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          // 📱 Debajo de este ancho la barra de filtros (buscador + 2
+          // desplegables apretados en un Row fijo flex:3/2/2) queda
+          // impracticable: se reemplaza por un Wrap para que cada control
+          // baje de renglón cuando no entra a lo ancho.
+          final bool esMovil = constraints.maxWidth < 700;
+          final double padding = esMovil ? 16.0 : 32.0;
+          final double anchoDisponible = constraints.maxWidth - (padding * 2);
+          // Dos desplegables por renglón sólo si cada uno conserva un ancho
+          // usable; si no, ocupan el renglón completo.
+          final double anchoMitad = (anchoDisponible - 12) / 2;
+          final double anchoFiltro = anchoMitad >= 240
+              ? anchoMitad
+              : anchoDisponible;
+
+          final Widget campoBusqueda = TextField(
+            decoration: InputDecoration(
+              hintText: 'Buscar por Nombre, Código de Barras o SKU...',
+              prefixIcon: const Icon(Icons.search),
+              filled: true,
+              fillColor: Colors.white,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.grey.shade300),
+              ),
+            ),
+            onChanged: (v) => setState(() => _searchQuery = v.toLowerCase()),
+          );
+
+          final Widget filtroTipo = DropdownButtonFormField<String>(
+            value: _filtroTipo,
+            decoration: const InputDecoration(
+              labelText: 'Filtrar por Depósito / Tipo',
+              filled: true,
+              fillColor: Colors.white,
+              border: OutlineInputBorder(),
+            ),
+            items: _tiposInventario
+                .map((t) => DropdownMenuItem(value: t, child: Text(t)))
+                .toList(),
+            onChanged: (v) => setState(() => _filtroTipo = v!),
+          );
+
+          final Widget filtroUbicacion = DropdownButtonFormField<String>(
+            value: _filtroUbicacion,
+            decoration: const InputDecoration(
+              labelText: 'Filtrar por Ubicación',
+              filled: true,
+              fillColor: Colors.white,
+              border: OutlineInputBorder(),
+            ),
+            items: _ubicaciones
+                .map((u) => DropdownMenuItem(value: u, child: Text(u)))
+                .toList(),
+            onChanged: (v) => setState(() => _filtroUbicacion = v!),
+          );
+
+          return Padding(
+            padding: EdgeInsets.all(padding),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '🗃️ Central Única de Inventario',
               style: TextStyle(
                 fontSize: 28,
                 fontWeight: FontWeight.bold,
@@ -523,63 +581,28 @@ class _InventarioGeneralPageState extends State<InventarioGeneralPage> {
             ),
             const SizedBox(height: 20),
 
-            // FILTROS AVANZADOS DE CENTRALIZACIÓN
-            Row(
-              children: [
-                Expanded(
-                  flex: 3,
-                  child: TextField(
-                    decoration: InputDecoration(
-                      hintText: 'Buscar por Nombre, Código de Barras o SKU...',
-                      prefixIcon: const Icon(Icons.search),
-                      filled: true,
-                      fillColor: Colors.white,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
-                        borderSide: BorderSide(color: Colors.grey.shade300),
-                      ),
-                    ),
-                    onChanged: (v) =>
-                        setState(() => _searchQuery = v.toLowerCase()),
+                // FILTROS AVANZADOS DE CENTRALIZACIÓN
+                if (esMovil)
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 8,
+                    children: [
+                      SizedBox(width: anchoDisponible, child: campoBusqueda),
+                      SizedBox(width: anchoFiltro, child: filtroTipo),
+                      SizedBox(width: anchoFiltro, child: filtroUbicacion),
+                    ],
+                  )
+                else
+                  Row(
+                    children: [
+                      Expanded(flex: 3, child: campoBusqueda),
+                      const SizedBox(width: 16),
+                      Expanded(flex: 2, child: filtroTipo),
+                      const SizedBox(width: 16),
+                      Expanded(flex: 2, child: filtroUbicacion),
+                    ],
                   ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  flex: 2,
-                  child: DropdownButtonFormField<String>(
-                    value: _filtroTipo,
-                    decoration: const InputDecoration(
-                      labelText: 'Filtrar por Depósito / Tipo',
-                      filled: true,
-                      fillColor: Colors.white,
-                      border: OutlineInputBorder(),
-                    ),
-                    items: _tiposInventario
-                        .map((t) => DropdownMenuItem(value: t, child: Text(t)))
-                        .toList(),
-                    onChanged: (v) => setState(() => _filtroTipo = v!),
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  flex: 2,
-                  child: DropdownButtonFormField<String>(
-                    value: _filtroUbicacion,
-                    decoration: const InputDecoration(
-                      labelText: 'Filtrar por Ubicación',
-                      filled: true,
-                      fillColor: Colors.white,
-                      border: OutlineInputBorder(),
-                    ),
-                    items: _ubicaciones
-                        .map((u) => DropdownMenuItem(value: u, child: Text(u)))
-                        .toList(),
-                    onChanged: (v) => setState(() => _filtroUbicacion = v!),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 24),
+                const SizedBox(height: 24),
 
             // EXPLORADOR EN FORMATO TABLA DE CONTROL DE AUDITORÍA
             Expanded(
@@ -712,8 +735,10 @@ class _InventarioGeneralPageState extends State<InventarioGeneralPage> {
                 ),
               ),
             ),
-          ],
-        ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }

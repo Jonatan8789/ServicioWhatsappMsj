@@ -1,0 +1,367 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 🔒 HELPER: Verifica si el usuario es un Admin activo.
+    // 💸 OPTIMIZACIÓN DE COSTO: antes esto hacía un get() a Firestore en
+    // TODA escritura de las ~30 colecciones que usan esAdmin()/esCajero()
+    // como guardia — una lectura extra por cada operación del sistema.
+    // Ahora primero mira el Custom Claim del ID token (gratis, sin leer
+    // Firestore) y sólo cae al get() de respaldo si ese claim todavía no
+    // está sincronizado (usuario recién creado/editado antes de que se le
+    // renueve el token — Cloud Function 'sincronizarCustomClaims'). El
+    // segundo operando de cada || sólo se evalúa si el primero es falso
+    // (short-circuit), así que ningún usuario con el claim al día paga la
+    // lectura nunca más.
+    function esAdmin() {
+      return request.auth != null && (
+        (request.auth.token.rol == 'admin' && request.auth.token.activo == true) ||
+        (get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol == 'admin' &&
+         get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.activo == true)
+      );
+    }
+
+    // 🔒 HELPER: Rol operativo de caja/mostrador — puede cobrar, vender y
+    // reservar, pero no toca configuración fiscal, seguridad ni el padrón
+    // de socios/proveedores. Mismo patrón claim-primero-get()-de-respaldo.
+    function esCajero() {
+      return request.auth != null && (
+        (request.auth.token.rol == 'cajero' && request.auth.token.activo == true) ||
+        (get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol == 'cajero' &&
+         get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.activo == true)
+      );
+    }
+
+    // 🔒 HELPER: admin O cajero — para las colecciones operativas de
+    // POS/caja/reservas que ambos roles necesitan poder escribir.
+    function esStaffOperativo() {
+      return esAdmin() || esCajero();
+    }
+
+    // 🔒 HELPER: Verifica si hay un usuario autenticado en la app
+    function estaAutenticado() {
+      return request.auth != null;
+    }
+
+    // 🔒 HELPER: Verifica que el update sólo toque los campos permitidos
+    function soloModifica(campos) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(campos);
+    }
+
+    // 👥 USUARIOS Y PERFILES
+    match /usuarios/{userId} {
+      allow read: if estaAutenticado() && (request.auth.uid == userId || esAdmin());
+      // 🚨 CRÍTICO: antes cualquier usuario recién registrado podía crear su
+      // propio documento con rol:'admin', y ese mismo campo es lo único que
+      // valida esAdmin() acá Y requireAdmin() en las Cloud Functions — o sea
+      // que cualquiera podía auto-promoverse a admin total del sistema.
+      // Ahora el alta propia nunca puede declararse admin NI cajero (rol
+      // operativo con acceso real a caja/POS) — sólo un admin ya existente
+      // puede otorgar esos roles (vía update, desde usuarios_page.dart).
+      allow create: if estaAutenticado() && request.auth.uid == userId &&
+        !(request.resource.data.get('rol', 'socio') in ['admin', 'cajero']);
+      allow update: if estaAutenticado() && esAdmin();
+      allow update: if estaAutenticado() && request.auth.uid == userId &&
+        soloModifica(['fcmToken', 'ultimaActualizacionToken', 'telefono', 'email']);
+      allow delete: if esAdmin();
+    }
+
+    // 🏷️ SOCIOS
+    match /socios/{socioId} {
+      allow read: if estaAutenticado();
+      allow write: if esAdmin();
+      // 🚨 CRÍTICO: antes CUALQUIER usuario autenticado (incluido un socio
+      // logueado en su propio portal) podía escribir CUALQUIER campo de
+      // CUALQUIER OTRO socio — saldoCuentaCorriente, matriculaAlDia,
+      // mesesCubiertosHasta, huellas, etc. Ahora el auto-servicio queda
+      // acotado al propio documento (usuarioUid == uid del que escribe) y a
+      // una lista explícita de campos no financieros/no de estado.
+      allow update: if estaAutenticado() &&
+        resource.data.usuarioUid == request.auth.uid &&
+        soloModifica([
+          'fcmToken', 'ultimaActualizacionToken',
+          'huellaHash', 'huellasHashes', 'huellasTemplates', 'ultimaVinculacionHuella',
+          'telefono', 'email', 'fotoUrl',
+          // 🔒 QR Dinámico del carnet (anti-capturas): el propio socio rota
+          // su token cada 25s desde socio_dashboard_page.dart. No son
+          // campos sensibles — sólo permiten identificarse a SÍ MISMO con
+          // un QR que vence rápido, nunca a otro socio.
+          'qrTokenActual', 'qrTokenExpira',
+        ]);
+    }
+    // Subcolecciones del socio (cuenta_corriente, etc.): datos financieros y
+    // de estado — sólo el staff/admin (o las Cloud Functions vía Admin SDK,
+    // que no pasan por estas reglas) puede escribirlas. Antes cualquier
+    // usuario autenticado podía escribir acá, incluyendo forjar pagos o
+    // pisar 'estadoPagoMP' de un cobro por Mercado Pago sin haber pagado.
+    match /socios/{socioId}/{subcoleccion=**} {
+      allow read: if esAdmin() ||
+        (estaAutenticado() &&
+          get(/databases/$(database)/documents/socios/$(socioId)).data.usuarioUid == request.auth.uid);
+      // esStaffOperativo (no sólo esAdmin) porque acá vive el cobro de
+      // cuotas en caja (cobro_manual_adelantado_dialog.dart), tarea normal
+      // de un cajero.
+      allow write: if esStaffOperativo();
+    }
+
+    match /profesores/{document=**} { allow read: if estaAutenticado(); allow write: if esAdmin(); }
+
+    // ⚙️ CONFIGURACIONES Y PARÁMETROS GLOBALES
+    match /configuracion/{document=**} { allow read: if estaAutenticado(); allow write: if esAdmin(); }
+    match /configuracion_paddle/{document=**} { allow read: if estaAutenticado(); allow write: if esAdmin(); }
+    match /configuraciones_paddle/{document=**} { allow read: if estaAutenticado(); allow write: if esAdmin(); }
+    match /configuracion_natatorio/{document=**} { allow read: if estaAutenticado(); allow write: if esAdmin(); }
+    match /configuraciones_fiscales/{document=**} { allow read: if esAdmin(); allow write: if esAdmin(); }
+    match /terminales_caja/{document=**} { allow read: if estaAutenticado(); allow write: if esAdmin(); }
+
+    // 🎾 RESERVAS, TURNOS, TORNEOS E INSCRIPCIONES
+    match /reservas_canchas/{reservaId} {
+      allow read: if estaAutenticado();
+      allow write: if esStaffOperativo();
+      // Autoservicio: el socio puede crear su propio turno...
+      allow create: if estaAutenticado() &&
+        get(/databases/$(database)/documents/socios/$(request.resource.data.socioId)).data.usuarioUid == request.auth.uid;
+      // ...y subir su comprobante de pago, pero JAMÁS tocar precio, seña o
+      // el estado de verificación de Mercado Pago (que sólo debe poder
+      // setear el webhook server-side) — antes cualquier autenticado podía
+      // pisar 'estadoPagoMP' a 'Aprobado' directo por Firestore y llevarse
+      // la cancha gratis.
+      allow update: if estaAutenticado() &&
+        resource.data.socioId != null &&
+        get(/databases/$(database)/documents/socios/$(resource.data.socioId)).data.usuarioUid == request.auth.uid &&
+        soloModifica(['estadoReserva', 'comprobanteUrl', 'fechaAdjuntoComprobante']);
+    }
+    // 🔁 Turnos fijos semanales de cancha — se crean y cancelan únicamente
+    // vía Cloud Functions (crearTurnoRecurrenteCanchaStaff/Socio,
+    // cancelarTurnoRecurrenteCancha), que validan ahí mismo quién puede
+    // tocar cuál turno. El cliente sólo necesita leerlos (para mostrar "tu
+    // turno fijo" o la lista de abonos en el panel de staff).
+    match /turnos_recurrentes_canchas/{turnoId} {
+      allow read: if estaAutenticado();
+      allow write: if false;
+    }
+    // 🔒 Documentos "slot" (uno por hora ocupada) que garantizan, dentro de
+    // la transacción atómica de reserva_cancha_repository.dart, que dos
+    // reservas no puedan quedarse con la misma hora. No tienen datos
+    // sensibles — sólo marcan una hora como tomada — así que cualquier
+    // autenticado puede crearlos (siempre junto con su propia reserva, en
+    // la misma transacción) pero sólo el staff puede borrarlos (cancelar).
+    match /reservas_canchas_slots/{slotId} {
+      allow read: if estaAutenticado();
+      allow create: if estaAutenticado();
+      allow delete: if esStaffOperativo();
+      allow update: if false;
+    }
+    // 🏊 ANDARIVELES (natatorio): cupo compartido por horario/categoría, ver
+    // andarivel_reserva_repository.dart para la transacción atómica.
+    match /reservas_andariveles/{reservaId} {
+      allow read: if estaAutenticado();
+      allow write: if esStaffOperativo();
+      // Autoservicio: el socio sólo puede crear una reserva a su propio
+      // nombre (mismo criterio que reservas_canchas).
+      allow create: if estaAutenticado() &&
+        get(/databases/$(database)/documents/socios/$(request.resource.data.socioId)).data.usuarioUid == request.auth.uid;
+    }
+    // Documento contador por andarivel/horario/día. 'cupoMaximo' y
+    // 'categoria' sólo los fija el staff (o la primera creación, que
+    // arranca en ocupados=1); el autoservicio del socio sólo puede sumar un
+    // lugar propio de a uno por vez — nunca bajar el contador, ni tocar el
+    // cupo o la categoría ya fijados.
+    match /cupos_andariveles/{slotId} {
+      allow read: if estaAutenticado();
+      allow create: if estaAutenticado() &&
+        (esStaffOperativo() ||
+          (request.resource.data.ocupados == 1 &&
+           request.resource.data.cupoMaximo > 0));
+      allow update: if estaAutenticado() &&
+        (esStaffOperativo() ||
+          (soloModifica(['ocupados']) &&
+           request.resource.data.ocupados == resource.data.ocupados + 1));
+      allow delete: if esStaffOperativo();
+    }
+    // 🎾 PARTIDO ABIERTO: matchmaking para completar 4 jugadores en una
+    // cancha ya reservada, ver partido_abierto_repository.dart.
+    // ⚠️ Esta regla de 'update' (el self-service de "Unirme") usa slicing de
+    // listas ([inicio:fin]); no tuve forma de probarla contra un emulador de
+    // Firestore real en este entorno — antes de confiar en el flujo de
+    // autoservicio en producción, conviene validarla con el Rules
+    // Playground de la consola de Firebase o `firebase emulators:start`.
+    match /partidos_abiertos/{partidoId} {
+      allow read: if estaAutenticado();
+      allow write: if esStaffOperativo();
+      // Crear: arranca únicamente con el propio organizador como jugador.
+      allow create: if estaAutenticado() &&
+        request.resource.data.jugadoresIds == [request.resource.data.creadoPor] &&
+        request.resource.data.jugadoresNombres.size() == 1 &&
+        get(/databases/$(database)/documents/socios/$(request.resource.data.creadoPor)).data.usuarioUid == request.auth.uid;
+      // Unirse: sólo puede sumarse un jugador por vez, al final de la lista,
+      // sin tocar a los que ya estaban, y ese jugador tiene que ser quien
+      // llama (verificado vía socios/{id}.usuarioUid, igual que en
+      // reservas_canchas). 'estado' sólo puede pasar de Abierto a Abierto o
+      // Completo (nunca a/desde Cancelado por esta vía).
+      allow update: if estaAutenticado() &&
+        soloModifica(['jugadoresIds', 'jugadoresNombres', 'estado']) &&
+        resource.data.estado != 'Cancelado' &&
+        request.resource.data.estado != 'Cancelado' &&
+        request.resource.data.jugadoresIds.size() == resource.data.jugadoresIds.size() + 1 &&
+        request.resource.data.jugadoresIds.size() <= 4 &&
+        request.resource.data.jugadoresIds[0:resource.data.jugadoresIds.size()] == resource.data.jugadoresIds &&
+        request.resource.data.jugadoresNombres.size() == request.resource.data.jugadoresIds.size() &&
+        get(/databases/$(database)/documents/socios/$(request.resource.data.jugadoresIds[resource.data.jugadoresIds.size()])).data.usuarioUid == request.auth.uid;
+    }
+    match /torneos/{document=**} { allow read: if estaAutenticado(); allow write: if esAdmin(); }
+    match /torneos/{torneoId}/parejas_inscriptas/{inscripcionId} { allow read, write: if estaAutenticado(); }
+    match /inscripciones/{document=**} { allow read, write: if estaAutenticado(); }
+    match /cronogramas/{document=**} { allow read: if estaAutenticado(); allow write: if esAdmin(); }
+
+    // 🏋️ GIMNASIO: clases con lista de espera FIFO y rutinas, ver
+    // clase_gimnasio_repository.dart / rutina_model.dart.
+    // ⚠️ El 'update' de inscriptosIds/listaEsperaIds no valida que cada
+    // socio sólo pueda tocar su propia entrada en esas listas (sí lo
+    // garantiza la transacción de la app, pero no esta regla por sí sola) —
+    // no hay un rol 'profesor' formal en este sistema para apoyarse, y la
+    // validación por-elemento-del-array con promoción FIFO es demasiado
+    // compleja para escribirla a ciegas sin un emulador de Firestore a
+    // mano. Dado que no es dato financiero ni de control de acceso, el
+    // riesgo residual (alguien manipulando su propia inscripción a una
+    // clase) se considera aceptable; conviene revisarla si en el futuro se
+    // le suma algún cobro.
+    match /clases_gimnasio/{claseId} {
+      allow read: if estaAutenticado();
+      allow create: if esStaffOperativo();
+      allow update: if estaAutenticado() &&
+        soloModifica([
+          'inscriptosIds', 'inscriptosNombres',
+          'listaEsperaIds', 'listaEsperaNombres',
+        ]);
+      allow delete: if esStaffOperativo();
+    }
+    // Una rutina por socio. No hay un rol 'profesor' formal (ver arriba),
+    // así que sigue el mismo criterio ya usado en 'asistencia': abierto a
+    // cualquier autenticado, dato de bajo riesgo (no financiero, no de
+    // acceso).
+    match /rutinas_gimnasio/{socioId} { allow read, write: if estaAutenticado(); }
+
+    // 📍 ASISTENCIAS Y ACCESOS (kiosco/staff)
+    match /asistencia/{document=**} { allow read, write: if estaAutenticado(); }
+    match /asistencias_accesos/{document=**} { allow read, write: if estaAutenticado(); }
+
+    // 🍔 BUFFET, COMANDAS Y VENTAS
+    match /buffet_productos/{document=**} { allow read: if estaAutenticado(); allow write: if esAdmin(); }
+    // 🚨 CRÍTICO: ventas_buffet guarda el CAE/factura fiscal y es el destino
+    // del flujo real de Mercado Pago ('estadoPagoMP', 'mpPaymentId'). Con
+    // escritura abierta a cualquier autenticado, un socio podía marcar su
+    // propia compra como pagada/fiscalizada sin haber pagado. El webhook
+    // (Admin SDK) no se ve afectado por este cambio.
+    match /ventas_buffet/{document=**} { allow read: if estaAutenticado(); allow write: if esStaffOperativo(); }
+    match /comandas_cocina/{document=**} { allow read: if estaAutenticado(); allow write: if esStaffOperativo(); }
+    match /mesas_activas/{document=**} { allow read: if estaAutenticado(); allow write: if esStaffOperativo(); }
+    match /ventas_pendientes/{document=**} {
+      allow read: if estaAutenticado();
+      allow write: if esStaffOperativo();
+      // 🚨 CRÍTICO: el socio nunca podía crear su propia "venta pendiente"
+      // al autoreservar un turno (reserva_cancha_screen.dart /
+      // socio_reserva_paddle_page.dart escriben acá directo desde el
+      // cliente) — esta colección sólo permitía staff, así que esa
+      // escritura fallaba siempre con permission-denied para un socio real,
+      // aunque la reserva de la cancha (que sí tiene su propia regla de
+      // autoservicio) ya se hubiera confirmado.
+      allow create: if estaAutenticado() &&
+        request.resource.data.socio_id == request.auth.uid;
+    }
+
+    // 💵 CAJA, CONTABILIDAD Y MOVIMIENTOS
+    // 🚨 CRÍTICO: los totales de caja (efectivo, Mercado Pago, tarjeta...)
+    // se podían editar directo desde el cliente por cualquier autenticado.
+    match /control_cajas/{document=**} { allow read: if estaAutenticado(); allow write: if esStaffOperativo(); }
+    match /auditoria_movimientos_caja/{document=**} { allow read: if estaAutenticado(); allow write: if esAdmin(); }
+    match /movimientos/{document=**} { allow read, write: if esAdmin(); }
+    match /cuenta_corriente/{document=**} { allow read, write: if esAdmin(); }
+    match /mp_cobros_pendientes/{document=**} { allow read, write: if esAdmin(); }
+    match /ajustes_fiscales_nc_nd/{document=**} { allow read, write: if esAdmin(); }
+
+    // 📦 INVENTARIO Y PROVEEDORES
+    // esStaffOperativo: la venta en POS decrementa stockActual en tiempo
+    // real, tarea normal de un cajero. El alta/ABM de productos (catálogo)
+    // sigue siendo admin-only vía buffet_productos más arriba.
+    match /inventario_general/{document=**} { allow read: if estaAutenticado(); allow write: if esStaffOperativo(); }
+    match /proveedores/{document=**} { allow read, write: if esAdmin(); }
+
+    // 📋 AUDITORÍA — registro de operaciones sensibles del sistema.
+    // create-only e inmutable: ni siquiera un admin puede editar o borrar
+    // un asiento ya escrito (así el registro es confiable de verdad).
+    match /auditoria_sistema/{document=**} {
+      allow read: if esAdmin();
+      allow create: if esStaffOperativo();
+      allow update, delete: if false;
+    }
+
+    // 🔔 NOTIFICACIONES Y SESIÓN
+    match /mensajeria_notificaciones/{document=**} { allow read, write: if estaAutenticado(); }
+    match /whatsapp_session/{document=**} { allow read, write: if esAdmin(); }
+
+    // 🌐 SITIO WEB PÚBLICO (CMS editable desde el panel admin, ver
+    // lib/features/admin/sitio_web_page.dart). El sitio en Next.js no tiene
+    // login propio — sus visitantes nunca son un `request.auth` de esta
+    // app — así que el contenido del sitio (textos, fotos/videos) necesita
+    // ser de lectura pública a propósito; sólo admin puede editarlo.
+    match /sitio_web/{document=**} { allow read: if true; allow write: if esAdmin(); }
+    match /sitio_web_secciones/{document=**} { allow read: if true; allow write: if esAdmin(); }
+    match /sitio_web_galeria/{document=**} { allow read: if true; allow write: if esAdmin(); }
+    // Formulario de contacto del sitio: cualquier visitante anónimo tiene
+    // que poder crear una consulta (no hay login), pero nadie de afuera
+    // puede leer/editar las que ya se mandaron — eso sólo lo ve admin desde
+    // el panel. La validación de forma (sin `estaAutenticado()`, porque acá
+    // nunca lo hay) evita que se escriba cualquier documento arbitrario.
+    match /sitio_web_contactos/{contactoId} {
+      allow read, update, delete: if esAdmin();
+      allow create: if
+        request.resource.data.nombre is string &&
+        request.resource.data.nombre.size() > 0 &&
+        request.resource.data.nombre.size() < 200 &&
+        request.resource.data.mensaje is string &&
+        request.resource.data.mensaje.size() > 0 &&
+        request.resource.data.mensaje.size() < 2000 &&
+        request.resource.data.estado == 'Nuevo' &&
+        request.resource.data.origen == 'sitio_web';
+    }
+    // Pre-inscripción de socio nuevo: mismo criterio que sitio_web_contactos
+    // (público puede crear, sólo admin lee/gestiona), con su propia
+    // validación de forma porque el documento tiene más campos.
+    match /sitio_web_preinscripciones/{preinscripcionId} {
+      allow read, update, delete: if esAdmin();
+      allow create: if
+        request.resource.data.nombre is string &&
+        request.resource.data.nombre.size() > 0 &&
+        request.resource.data.nombre.size() < 200 &&
+        request.resource.data.apellido is string &&
+        request.resource.data.apellido.size() > 0 &&
+        request.resource.data.apellido.size() < 200 &&
+        request.resource.data.dni is string &&
+        request.resource.data.dni.size() > 0 &&
+        request.resource.data.dni.size() < 20 &&
+        request.resource.data.telefono is string &&
+        request.resource.data.telefono.size() > 0 &&
+        request.resource.data.telefono.size() < 40 &&
+        request.resource.data.estado == 'Nueva' &&
+        request.resource.data.origen == 'sitio_web';
+    }
+
+    // 🎟️ Pases digitales (Wallet) — sólo estructura por ahora, ver
+    // functions/index.js 'generarPaseWallet'. La escritura real sólo la
+    // hace esa Cloud Function (Admin SDK, no pasa por estas reglas); desde
+    // el cliente sólo se puede leer el propio pase.
+    match /pases_digitales/{socioId} {
+      allow read: if esAdmin() ||
+        (estaAutenticado() &&
+          get(/databases/$(database)/documents/socios/$(socioId)).data.usuarioUid == request.auth.uid);
+      allow write: if false;
+    }
+
+    // 🛡️ REGLA COMPLEMENTARIA DE SEGURIDAD (default-deny en escritura)
+    match /{document=**} {
+      allow read: if estaAutenticado();
+      allow write: if esAdmin();
+    }
+  }
+}

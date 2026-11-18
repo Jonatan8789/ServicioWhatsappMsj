@@ -17,6 +17,15 @@ class _ConfiguracionPageState extends State<ConfiguracionPage> {
       TextEditingController();
   final TextEditingController _finHorarioController = TextEditingController();
 
+  @override
+  void dispose() {
+    _itemController.dispose();
+    _idHorarioController.dispose();
+    _inicioHorarioController.dispose();
+    _finHorarioController.dispose();
+    super.dispose();
+  }
+
   // --- MÉTODOS PARA DEPORTES Y FRECUENCIAS ---
   Future<void> _agregarItemLista(String documento, String valor) async {
     if (valor.isEmpty) return;

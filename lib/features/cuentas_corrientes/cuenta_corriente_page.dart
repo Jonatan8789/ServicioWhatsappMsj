@@ -221,10 +221,15 @@ class _CuentaCorrienteSocioPageState extends State<CuentaCorrienteSocioPage> {
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: const Color(0xFFE2E8F0)),
               ),
-              child: Row(
+              // 📱 Antes era un Row fijo de 3 Expanded — con menos de ~600px
+              // de ancho quedan ilegibles. Wrap deja que cada filtro baje de
+              // renglón cuando no entra, sin necesitar un breakpoint manual.
+              child: Wrap(
+                spacing: 16,
+                runSpacing: 12,
                 children: [
-                  Expanded(
-                    flex: 2,
+                  SizedBox(
+                    width: 260,
                     child: TextFormField(
                       controller: _busquedaController,
                       decoration: const InputDecoration(
@@ -236,8 +241,8 @@ class _CuentaCorrienteSocioPageState extends State<CuentaCorrienteSocioPage> {
                           setState(() => _busquedaConcepto = v.toLowerCase()),
                     ),
                   ),
-                  const SizedBox(width: 16),
-                  Expanded(
+                  SizedBox(
+                    width: 220,
                     child: DropdownButtonFormField<String>(
                       initialValue: _filtroTipo,
                       decoration: const InputDecoration(
@@ -262,8 +267,8 @@ class _CuentaCorrienteSocioPageState extends State<CuentaCorrienteSocioPage> {
                           setState(() => _filtroTipo = val ?? 'Todos'),
                     ),
                   ),
-                  const SizedBox(width: 16),
-                  Expanded(
+                  SizedBox(
+                    width: 220,
                     child: DropdownButtonFormField<String>(
                       initialValue: _filtroFecha,
                       decoration: const InputDecoration(

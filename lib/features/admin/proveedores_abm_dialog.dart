@@ -109,41 +109,31 @@ class _ProveedoresAbmDialogState extends State<ProveedoresAbmDialog> {
               children: [
                 // 1️⃣ DATOS PRINCIPALES Y DNI/CUIT
                 _seccionTitulo('Datos Identificatorios'),
-                Row(
-                  children: [
-                    Expanded(
-                      flex: 2,
-                      child: TextFormField(
-                        controller: _razonSocialCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'Razón Social *',
-                          isDense: true,
-                        ),
-                        validator: (v) => v!.isEmpty ? 'Requerido' : null,
+                _filaCampos(
+                  flexes: const [2, 2, 1],
+                  [
+                    TextFormField(
+                      controller: _razonSocialCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Razón Social *',
+                        isDense: true,
+                      ),
+                      validator: (v) => v!.isEmpty ? 'Requerido' : null,
+                    ),
+                    TextFormField(
+                      controller: _nombreFantasiaCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Nombre Fantasía',
+                        isDense: true,
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      flex: 2,
-                      child: TextFormField(
-                        controller: _nombreFantasiaCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'Nombre Fantasía',
-                          isDense: true,
-                        ),
+                    TextFormField(
+                      controller: _cuitCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'CUIT / CUIL *',
+                        isDense: true,
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      flex: 1,
-                      child: TextFormField(
-                        controller: _cuitCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'CUIT / CUIL *',
-                          isDense: true,
-                        ),
-                        validator: (v) => v!.isEmpty ? 'Requerido' : null,
-                      ),
+                      validator: (v) => v!.isEmpty ? 'Requerido' : null,
                     ),
                   ],
                 ),
@@ -151,211 +141,159 @@ class _ProveedoresAbmDialogState extends State<ProveedoresAbmDialog> {
 
                 // 2️⃣ DATOS FISCALES E IMPOSITIVOS
                 _seccionTitulo('Información Impositiva & Fiscal'),
-                Row(
-                  children: [
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        value: _condicionIVA,
-                        decoration: const InputDecoration(
-                          labelText: 'Condición IVA',
-                          isDense: true,
-                        ),
-                        items:
-                            [
-                                  'Responsable Inscripto',
-                                  'Monotributo',
-                                  'Exento',
-                                  'Consumidor Final',
-                                ]
-                                .map(
-                                  (e) => DropdownMenuItem(
-                                    value: e,
-                                    child: Text(e),
-                                  ),
-                                )
-                                .toList(),
-                        onChanged: (v) => setState(() => _condicionIVA = v!),
-                      ),
+                _filaCampos([
+                  DropdownButtonFormField<String>(
+                    value: _condicionIVA,
+                    decoration: const InputDecoration(
+                      labelText: 'Condición IVA',
+                      isDense: true,
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        value: _jurisdiccionIIBB,
-                        decoration: const InputDecoration(
-                          labelText: 'Jurisdicción IIBB',
-                          isDense: true,
-                        ),
-                        items:
-                            [
-                                  'ARBA (Bs. As.)',
-                                  'AGIP (CABA)',
-                                  'Convenio Multilateral',
-                                  'Exento',
-                                ]
-                                .map(
-                                  (e) => DropdownMenuItem(
-                                    value: e,
-                                    child: Text(e),
-                                  ),
-                                )
-                                .toList(),
-                        onChanged: (v) =>
-                            setState(() => _jurisdiccionIIBB = v!),
-                      ),
+                    items:
+                        [
+                              'Responsable Inscripto',
+                              'Monotributo',
+                              'Exento',
+                              'Consumidor Final',
+                            ]
+                            .map(
+                              (e) => DropdownMenuItem(value: e, child: Text(e)),
+                            )
+                            .toList(),
+                    onChanged: (v) => setState(() => _condicionIVA = v!),
+                  ),
+                  DropdownButtonFormField<String>(
+                    value: _jurisdiccionIIBB,
+                    decoration: const InputDecoration(
+                      labelText: 'Jurisdicción IIBB',
+                      isDense: true,
                     ),
-                  ],
-                ),
+                    items:
+                        [
+                              'ARBA (Bs. As.)',
+                              'AGIP (CABA)',
+                              'Convenio Multilateral',
+                              'Exento',
+                            ]
+                            .map(
+                              (e) => DropdownMenuItem(value: e, child: Text(e)),
+                            )
+                            .toList(),
+                    onChanged: (v) => setState(() => _jurisdiccionIIBB = v!),
+                  ),
+                ]),
                 const SizedBox(height: 12),
 
                 // 3️⃣ CONDICIONES COMERCIALES (DÍAS DE CRÉDITO Y MEDIO DE PAGO)
                 _seccionTitulo('Condiciones Comerciales & Pago'),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextFormField(
-                        initialValue: _diasVencimientoFactura.toString(),
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(
-                          labelText: 'Días Vencimiento Facturas',
-                          suffixText: 'Días',
-                          isDense: true,
-                        ),
-                        onChanged: (v) =>
-                            _diasVencimientoFactura = int.tryParse(v) ?? 0,
-                      ),
+                _filaCampos([
+                  TextFormField(
+                    initialValue: _diasVencimientoFactura.toString(),
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Días Vencimiento Facturas',
+                      suffixText: 'Días',
+                      isDense: true,
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        value: _medioPagoHabitual,
-                        decoration: const InputDecoration(
-                          labelText: 'Medio de Pago Habitual',
-                          isDense: true,
-                        ),
-                        items:
-                            [
-                                  'Transferencia Bancaria',
-                                  'Efectivo',
-                                  'Cheque Propio',
-                                  'ECHEQ',
-                                ]
-                                .map(
-                                  (e) => DropdownMenuItem(
-                                    value: e,
-                                    child: Text(e),
-                                  ),
-                                )
-                                .toList(),
-                        onChanged: (v) =>
-                            setState(() => _medioPagoHabitual = v!),
-                      ),
+                    onChanged: (v) =>
+                        _diasVencimientoFactura = int.tryParse(v) ?? 0,
+                  ),
+                  DropdownButtonFormField<String>(
+                    value: _medioPagoHabitual,
+                    decoration: const InputDecoration(
+                      labelText: 'Medio de Pago Habitual',
+                      isDense: true,
                     ),
-                  ],
-                ),
+                    items:
+                        [
+                              'Transferencia Bancaria',
+                              'Efectivo',
+                              'Cheque Propio',
+                              'ECHEQ',
+                            ]
+                            .map(
+                              (e) => DropdownMenuItem(value: e, child: Text(e)),
+                            )
+                            .toList(),
+                    onChanged: (v) => setState(() => _medioPagoHabitual = v!),
+                  ),
+                ]),
                 const SizedBox(height: 12),
 
                 // 4️⃣ DATOS BANCARIOS
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextFormField(
-                        controller: _bancoCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'Banco',
-                          isDense: true,
-                        ),
-                      ),
+                _filaCampos([
+                  TextFormField(
+                    controller: _bancoCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Banco',
+                      isDense: true,
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        controller: _cbuCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'CBU / CVU',
-                          isDense: true,
-                        ),
-                      ),
+                  ),
+                  TextFormField(
+                    controller: _cbuCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'CBU / CVU',
+                      isDense: true,
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        controller: _aliasCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'Alias CBU',
-                          isDense: true,
-                        ),
-                      ),
+                  ),
+                  TextFormField(
+                    controller: _aliasCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Alias CBU',
+                      isDense: true,
                     ),
-                  ],
-                ),
+                  ),
+                ]),
                 const SizedBox(height: 12),
 
                 // 5️⃣ DOMICILIO Y CONTACTO
                 _seccionTitulo('Domicilio & Contacto'),
-                Row(
-                  children: [
-                    Expanded(
-                      flex: 2,
-                      child: TextFormField(
-                        controller: _calleCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'Dirección / Calle',
-                          isDense: true,
-                        ),
+                _filaCampos(
+                  flexes: const [2, 1, 1],
+                  [
+                    TextFormField(
+                      controller: _calleCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Dirección / Calle',
+                        isDense: true,
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        controller: _localidadCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'Localidad',
-                          isDense: true,
-                        ),
+                    TextFormField(
+                      controller: _localidadCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Localidad',
+                        isDense: true,
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        value: _provincia,
-                        decoration: const InputDecoration(
-                          labelText: 'Provincia',
-                          isDense: true,
-                        ),
-                        items: _provinciasArg
-                            .map(
-                              (p) => DropdownMenuItem(value: p, child: Text(p)),
-                            )
-                            .toList(),
-                        onChanged: (v) => setState(() => _provincia = v!),
+                    DropdownButtonFormField<String>(
+                      value: _provincia,
+                      decoration: const InputDecoration(
+                        labelText: 'Provincia',
+                        isDense: true,
                       ),
+                      items: _provinciasArg
+                          .map((p) => DropdownMenuItem(value: p, child: Text(p)))
+                          .toList(),
+                      onChanged: (v) => setState(() => _provincia = v!),
                     ),
                   ],
                 ),
                 const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextFormField(
-                        controller: _telefonoCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'Teléfono de Contacto',
-                          isDense: true,
-                        ),
-                      ),
+                _filaCampos([
+                  TextFormField(
+                    controller: _telefonoCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Teléfono de Contacto',
+                      isDense: true,
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        controller: _emailCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'Email para Envío de OP',
-                          isDense: true,
-                        ),
-                      ),
+                  ),
+                  TextFormField(
+                    controller: _emailCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Email para Envío de OP',
+                      isDense: true,
                     ),
-                  ],
-                ),
+                  ),
+                ]),
               ],
             ),
           ),
@@ -375,6 +313,40 @@ class _ProveedoresAbmDialogState extends State<ProveedoresAbmDialog> {
           child: Text(esEdicion ? 'Actualizar' : 'Guardar Proveedor'),
         ),
       ],
+    );
+  }
+
+  // 📱 Reemplaza los ~6 Row(Expanded, Expanded, ...) de este formulario que
+  // antes quedaban ilegibles en un teléfono: por debajo de 500px de ancho
+  // (el diálogo ya está acotado a 850px como máximo) cada campo pasa a
+  // ocupar su propio renglón en vez de compartir uno apretado.
+  Widget _filaCampos(List<Widget> campos, {List<int>? flexes}) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final bool esMovil = constraints.maxWidth < 500;
+        if (esMovil) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (int i = 0; i < campos.length; i++) ...[
+                campos[i],
+                if (i < campos.length - 1) const SizedBox(height: 12),
+              ],
+            ],
+          );
+        }
+        return Row(
+          children: [
+            for (int i = 0; i < campos.length; i++) ...[
+              Expanded(
+                flex: flexes != null ? flexes[i] : 1,
+                child: campos[i],
+              ),
+              if (i < campos.length - 1) const SizedBox(width: 12),
+            ],
+          ],
+        );
+      },
     );
   }
 

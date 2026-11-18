@@ -1,0 +1,71 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // 🔒 Mismo criterio de admin que firestore.rules, pero cruzando a
+    // Firestore desde Storage (sólo se puede leer la base (default)).
+    function esAdmin() {
+      return request.auth != null &&
+        firestore.get(/databases/(default)/documents/usuarios/$(request.auth.uid)).data.rol == 'admin' &&
+        firestore.get(/databases/(default)/documents/usuarios/$(request.auth.uid)).data.activo == true;
+    }
+
+    // 📸 Fotos de socios y aptos médicos (alta_socio_page.dart /
+    // editar_socio_page.dart). Ningún socio sube su propia foto desde el
+    // portal — sólo el staff la carga al dar de alta o editar la ficha —
+    // así que antes 'allow write: if request.auth != null' dejaba que
+    // cualquier socio logueado pisara o borrara la foto/apto médico de
+    // CUALQUIER OTRO socio (el nombre de archivo usa el DNI, adivinable).
+    // Lectura pública: se mantiene, la usa el carnet QR y otras vistas sin
+    // sesión administrada.
+    match /socios/{allPaths=**} {
+      allow read: if true;
+      allow create, update: if esAdmin() &&
+        request.resource.size < 8 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/.*|application/pdf');
+      allow delete: if esAdmin();
+    }
+
+    // 🧾 Comprobantes de pago de reservas, subidos por el propio socio
+    // (socio_dashboard_page.dart). Esta ruta no tenía NINGUNA regla en el
+    // archivo original — la subida fallaba siempre con permission-denied.
+    // La verificación de que el comprobante corresponde a SU reserva ya
+    // queda resuelta en firestore.rules (sólo el dueño de la reserva puede
+    // pisar 'comprobanteUrl'); acá sólo se acota tamaño/tipo.
+    match /comprobantes_reservas/{allPaths=**} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null &&
+        request.resource.size < 8 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/.*|application/pdf');
+      allow delete: if request.auth != null;
+    }
+
+    // 🧾 Facturas de compra a proveedores (nueva_factura_compra_dialog.dart,
+    // pantalla exclusiva de administración). Tampoco tenía regla propia —
+    // la subida fallaba siempre.
+    match /compras_facturas/{allPaths=**} {
+      allow read: if esAdmin();
+      allow create, update: if esAdmin() &&
+        request.resource.size < 8 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/.*|application/pdf');
+      allow delete: if esAdmin();
+    }
+
+    // 🌐 Fotos/videos del sitio web público (galería, hero, secciones) —
+    // subidos desde el panel admin (sitio_web_page.dart). Lectura pública:
+    // el sitio en Next.js los muestra sin login. Tope más alto que el resto
+    // (50MB) porque acá entran también clips de video cortos.
+    match /sitio_web/{allPaths=**} {
+      allow read: if true;
+      allow create, update: if esAdmin() &&
+        request.resource.size < 50 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/.*|video/.*');
+      allow delete: if esAdmin();
+    }
+
+    // 🛡️ Cualquier otra ruta no prevista explícitamente: denegada.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

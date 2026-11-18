@@ -8,6 +8,7 @@ import 'producto_buffet_model.dart';
 import '../tarifas/tarifa_model.dart';
 import '../../theme/app_theme.dart';
 import '../inventario/movimiento_stock_service.dart';
+import '../../shared/mercado_pago_dialog.dart';
 import '../../services/sugerencia_fiscal_service.dart';
 
 class FirebaseFunctions {
@@ -32,10 +33,48 @@ class PosCajaPage extends StatefulWidget {
 class _PosCajaPageState extends State<PosCajaPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
+  // 🚨 El bridge de WhatsApp (server.js) exige un ID token de Firebase de un
+  // admin activo desde que se le agregó autenticación — estas llamadas
+  // nunca mandaban el header y fallaban en silencio (401) desde entonces.
+  Future<Map<String, String>> _headersWhatsapp() async {
+    final token = await FirebaseAuth.instance.currentUser?.getIdToken();
+    return {
+      'Content-Type': 'application/json',
+      if (token != null) 'Authorization': 'Bearer $token',
+    };
+  }
+
   List<Map<String, dynamic>> _carrito = [];
   String? _socioSeleccionadoId;
   String _busquedaSocioPOS = "";
   Map<String, dynamic>? _socioSeleccionadoPOS;
+
+  // 💸 Antes la búsqueda de socio en POS streameaba en vivo la colección
+  // ENTERA de socios (.snapshots(), no .get()) y, como el stream se
+  // recreaba en cada tecla presionada, cada letra tipeada volvía a leer
+  // TODA la colección. Ahora se trae una sola vez al abrir la caja y la
+  // búsqueda filtra en memoria — cero lecturas por tecla. "Actualizar" en
+  // la lista de resultados permite refrescar si se dio de alta un socio
+  // nuevo mientras la caja ya estaba abierta.
+  List<QueryDocumentSnapshot> _todosLosSocios = [];
+  bool _cargandoSocios = true;
+
+  Future<void> _cargarSocios() async {
+    setState(() => _cargandoSocios = true);
+    final snap = await _firestore.collection('socios').get();
+    if (mounted) {
+      setState(() {
+        _todosLosSocios = snap.docs;
+        _cargandoSocios = false;
+      });
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _cargarSocios();
+  }
 
   List<DocumentSnapshot> _reservasPendientesDelSocio = [];
   bool _buscandoReservas = false;
@@ -93,14 +132,29 @@ class _PosCajaPageState extends State<PosCajaPage> {
     buffer.writeln('\n¡Muchas gracias por tu compra!');
 
     try {
-      await http.post(
+      final resp = await http.post(
         Uri.parse('https://servicio-whatsapp-oqua.onrender.com/send-whatsapp'),
-        headers: {'Content-Type': 'application/json'},
+        headers: await _headersWhatsapp(),
         body: jsonEncode({'phone': limpio, 'message': buffer.toString()}),
       );
+      if (resp.statusCode != 200) {
+        debugPrint('⚠️ Recibo WhatsApp no enviado (${resp.statusCode}): ${resp.body}');
+        _avisarFalloWhatsapp('No se pudo enviar el recibo por WhatsApp.');
+      }
     } catch (e) {
-      print('⚠️ Error al enviar recibo por WhatsApp: $e');
+      debugPrint('⚠️ Error al enviar recibo por WhatsApp: $e');
+      _avisarFalloWhatsapp('No se pudo enviar el recibo por WhatsApp.');
     }
+  }
+
+  // 🚨 Antes un envío de WhatsApp fallido sólo quedaba en debugPrint — en un
+  // build de release eso es invisible, así que el cajero nunca se enteraba
+  // de que el cliente no recibió su comprobante/aviso.
+  void _avisarFalloWhatsapp(String mensaje) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('⚠️ $mensaje'), backgroundColor: Colors.orange),
+    );
   }
 
   // 📊 DIÁLOGO Y PROCESO DE CIERRE DE CAJA CON REPORTE CONSOLIDADO
@@ -351,13 +405,18 @@ class _PosCajaPageState extends State<PosCajaPage> {
     if (observaciones.isNotEmpty) buffer.writeln('\n📝 *Obs:* $observaciones');
 
     try {
-      await http.post(
+      final resp = await http.post(
         Uri.parse('https://servicio-whatsapp-oqua.onrender.com/send-whatsapp'),
-        headers: {'Content-Type': 'application/json'},
+        headers: await _headersWhatsapp(),
         body: jsonEncode({'phone': limpio, 'message': buffer.toString()}),
       );
+      if (resp.statusCode != 200) {
+        debugPrint('⚠️ Consolidado WhatsApp no enviado (${resp.statusCode}): ${resp.body}');
+        _avisarFalloWhatsapp('No se pudo enviar el consolidado de cierre de caja.');
+      }
     } catch (e) {
-      print('Error enviando consolidado: $e');
+      debugPrint('Error enviando consolidado: $e');
+      _avisarFalloWhatsapp('No se pudo enviar el consolidado de cierre de caja.');
     }
   }
 
@@ -759,53 +818,63 @@ class _PosCajaPageState extends State<PosCajaPage> {
   }
 
   Widget _buildListaResultadosSocios() {
-    return StreamBuilder<QuerySnapshot>(
-      stream: _firestore.collection('socios').snapshots(),
-      builder: (context, snapshot) {
-        if (!snapshot.hasData) return const LinearProgressIndicator();
+    if (_cargandoSocios) return const LinearProgressIndicator();
 
-        final query = _busquedaSocioPOS.toLowerCase().trim();
-        final docs = snapshot.data!.docs.where((d) {
-          final data = d.data() as Map<String, dynamic>? ?? {};
-          final String n = (data['nombre'] ?? '').toString().toLowerCase();
-          final String dni = (data['dni'] ?? '').toString().toLowerCase();
-          return n.contains(query) || dni.contains(query);
-        }).toList();
+    final query = _busquedaSocioPOS.toLowerCase().trim();
+    final docs = _todosLosSocios.where((d) {
+      final data = d.data() as Map<String, dynamic>? ?? {};
+      final String n = (data['nombre'] ?? '').toString().toLowerCase();
+      final String dni = (data['dni'] ?? '').toString().toLowerCase();
+      return n.contains(query) || dni.contains(query);
+    }).toList();
 
-        return Container(
-          constraints: const BoxConstraints(maxHeight: 200),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            border: Border.all(color: Colors.grey.shade200),
-            borderRadius: BorderRadius.circular(8),
+    return Container(
+      constraints: const BoxConstraints(maxHeight: 200),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        border: Border.all(color: Colors.grey.shade200),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: _cargarSocios,
+              icon: const Icon(Icons.refresh_rounded, size: 14),
+              label: const Text('Actualizar', style: TextStyle(fontSize: 11)),
+            ),
           ),
-          child: ListView.builder(
-            shrinkWrap: true,
-            itemCount: docs.length,
-            itemBuilder: (context, i) {
-              final d = docs[i];
-              final data = d.data() as Map<String, dynamic>;
+          Flexible(
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: docs.length,
+              itemBuilder: (context, i) {
+                final d = docs[i];
+                final data = d.data() as Map<String, dynamic>;
 
-              return ListTile(
-                title: Text(data['nombre'] ?? ''),
-                subtitle: Text(
-                  'DNI: ${data['dni'] ?? 'S/D'} • Actividad: ${data['deporte'] ?? 'Natatorio'}',
-                ),
-                onTap: () {
-                  setState(() {
-                    _socioSeleccionadoId = d.id;
-                    _socioSeleccionadoPOS = data;
-                    _busquedaSocioPOS = "";
-                  });
-                  _buscarReservasPendientes(d.id);
-                  _verificarMatriculaAnual(d.id);
-                  _verificarYAgregarCuotaSocial(data, d.id);
-                },
-              );
-            },
+                return ListTile(
+                  title: Text(data['nombre'] ?? ''),
+                  subtitle: Text(
+                    'DNI: ${data['dni'] ?? 'S/D'} • Actividad: ${data['deporte'] ?? 'Natatorio'}',
+                  ),
+                  onTap: () {
+                    setState(() {
+                      _socioSeleccionadoId = d.id;
+                      _socioSeleccionadoPOS = data;
+                      _busquedaSocioPOS = "";
+                    });
+                    _buscarReservasPendientes(d.id);
+                    _verificarMatriculaAnual(d.id);
+                    _verificarYAgregarCuotaSocial(data, d.id);
+                  },
+                );
+              },
+            ),
           ),
-        );
-      },
+        ],
+      ),
     );
   }
 
@@ -886,19 +955,18 @@ class _PosCajaPageState extends State<PosCajaPage> {
                 'totalCtaCte': 0.0,
               });
 
-              if (mounted) {
-                Navigator.pop(dialogCtx);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      '🟢 PUNTO DE VENTA ABIERTO: ${_sectorCajaSeleccionado ?? "Caja"} iniciado con \$${montoInicial.toStringAsFixed(0)} ARS por $nombreOperador.',
-                    ),
-                    backgroundColor: Colors.green.shade800,
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    '🟢 PUNTO DE VENTA ABIERTO: ${_sectorCajaSeleccionado ?? "Caja"} iniciado con \$${montoInicial.toStringAsFixed(0)} ARS por $nombreOperador.',
                   ),
-                );
+                  backgroundColor: Colors.green.shade800,
+                ),
+              );
+              if (dialogCtx.mounted) Navigator.pop(dialogCtx);
 
-                if (esCobroAutomatico) _mostrarDialogoCobro();
-              }
+              if (esCobroAutomatico) _mostrarDialogoCobro();
             },
             child: const Text(
               'Abrir Caja y Continuar',
@@ -1406,6 +1474,10 @@ class _PosCajaPageState extends State<PosCajaPage> {
     }
 
     String? caeFactura;
+    String? vencimientoCaeFactura;
+    num? nroFacturaLegal;
+    num? puntoVentaLegal;
+    num? tipoComprobanteLegal;
     if (_emitirFacturaFiscal) {
       try {
         // 🧾 Concepto AFIP: el carrito puede mezclar productos (buffet) con
@@ -1431,6 +1503,10 @@ class _PosCajaPageState extends State<PosCajaPage> {
         });
         if (resp.data['success'] == true) {
           caeFactura = resp.data['cae'];
+          vencimientoCaeFactura = resp.data['vencimientoCae'];
+          nroFacturaLegal = resp.data['nroFactura'];
+          puntoVentaLegal = resp.data['puntoVenta'];
+          tipoComprobanteLegal = resp.data['tipoComprobante'];
         }
       } catch (e) {
         print("Error al solicitar CAE: $e");
@@ -1447,8 +1523,16 @@ class _PosCajaPageState extends State<PosCajaPage> {
       'fecha': DateTime.now(),
       'socio_id': _socioSeleccionadoId,
       'origen_salón': _mesaSeleccionadaNombre ?? 'Mostrador Directo',
+      'usuario': FirebaseAuth.instance.currentUser?.email ?? 'Administrador Central',
       'fiscalizado': _emitirFacturaFiscal && caeFactura != null,
       'cae': caeFactura ?? (_emitirFacturaFiscal ? 'ERROR_CAE' : 'NO_FISCAL_X'),
+      // 🧾 Antes sólo se guardaba el CAE: el explorador de ventas mostraba
+      // N° de comprobante y vencimiento de CAE con valores de relleno
+      // (0001-00000000) incluso para facturas realmente autorizadas.
+      if (vencimientoCaeFactura != null) 'vencimientoCae': vencimientoCaeFactura,
+      if (nroFacturaLegal != null) 'nroFacturaLegal': nroFacturaLegal,
+      if (puntoVentaLegal != null) 'puntoVentaLegal': puntoVentaLegal,
+      if (tipoComprobanteLegal != null) 'tipoComprobanteLegal': tipoComprobanteLegal,
       'estadoCocina': _carrito.any((it) => it['requiereCocina'] == true)
           ? 'Pendiente'
           : 'Entregado',
@@ -1495,6 +1579,25 @@ class _PosCajaPageState extends State<PosCajaPage> {
     }
 
     await batch.commit();
+
+    // 🧾💳 MERCADO PAGO REAL: antes "Mercado Pago" era sólo una etiqueta que
+    // el cajero tildaba a mano, sin ninguna verificación — crearCobroMercadoPago
+    // (genera una preferencia de Checkout Pro) y webhookMercadoPago (valida el
+    // pago contra la API de MP) ya existían en el backend pero nada los
+    // llamaba. Ahora, al cobrar con Mercado Pago, se muestra el QR/link real
+    // y se espera la confirmación del webhook antes de dar la venta por
+    // cobrada de verdad.
+    if (medio == 'Mercado Pago' && mounted) {
+      await mostrarSelectorCobroMercadoPago(
+        context,
+        ruta: 'ventas_buffet/${ventaRef.id}',
+        campoMonto: 'total',
+        campoMedioPago: 'medio_pago',
+        concepto: itemsCobrados.isNotEmpty
+            ? '${itemsCobrados.length} ítem(s) - $_sectorCajaSeleccionado'
+            : 'Consumo Aqua & Paddle Club',
+      );
+    }
 
     final String? telefonoSocio = datosSocioActual?['telefono'] as String?;
     final String nombreCliente =

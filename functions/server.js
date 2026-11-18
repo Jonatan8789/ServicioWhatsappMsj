@@ -243,16 +243,37 @@ app.post('/logout', requireAdminToken, async (req, res) => {
     }
 });
 
+// 🚨 Normaliza a código de país argentino (54/549) antes de armar el JID.
+// Antes esto sólo hacía `replace(/\D/g, '')` — un número cargado tal cual lo
+// tipea el staff (formato local, ej. "3415551234", sin 54/549 adelante) arma
+// un JID que no corresponde a ningún contacto real de WhatsApp, y
+// sock.sendMessage no necesariamente tira error por eso: el mensaje se
+// pierde en silencio. Este es el ÚNICO lugar por el que pasan TODOS los
+// envíos del sistema (llamadas directas del staff desde Flutter, el relay
+// de socios y los recordatorios automáticos), así que normalizar acá cubre
+// los ocho call-sites de una sola vez, sin tener que tocar cada uno.
+function limpiarTelefonoAr(telefono) {
+    let limpio = (telefono || '').toString().replace(/\D/g, '');
+    if (!limpio) return '';
+    if (limpio.startsWith('0')) limpio = limpio.substring(1);
+    if (limpio.startsWith('15')) limpio = limpio.substring(2);
+    if (!limpio.startsWith('54')) limpio = `549${limpio}`;
+    return limpio;
+}
+
 // 📌 ENDPOINT: Enviar mensaje de WhatsApp
 app.post('/send-whatsapp', requireAdminToken, async (req, res) => {
     const { phone, message } = req.body;
     if (!isConnected || !sock) {
         return res.status(500).json({ success: false, error: 'WhatsApp no está conectado' });
     }
+    const cleanPhone = limpiarTelefonoAr(phone);
+    if (!cleanPhone || cleanPhone.length < 12) {
+        return res.status(400).json({ success: false, error: 'Número de teléfono inválido.' });
+    }
     try {
-        const cleanPhone = String(phone).replace(/\D/g, '');
         const jid = `${cleanPhone}@s.whatsapp.net`;
-        
+
         await sock.sendMessage(jid, { text: message });
         console.log(`💬 Mensaje enviado exitosamente a: ${cleanPhone}`);
         res.json({ success: true });
@@ -267,9 +288,3 @@ app.listen(PORT, () => {
     console.log(`🚀 Servidor ejecutándose en el puerto ${PORT}`);
     connectToWhatsApp();
 });
-
-// Agregá esta línea al final de tu index.js:
-const notificaciones = require('./notificaciones');
-
-exports.notificarInscripcionTorneo = notificaciones.notificarInscripcionTorneo;
-exports.notificarReservaCancha = notificaciones.notificarReservaCancha;

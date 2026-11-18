@@ -1,8 +1,14 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
+import 'package:cloud_functions/cloud_functions.dart';
 import 'reserva_cancha_model.dart';
+import 'reserva_cancha_repository.dart';
+import '../../shared/mercado_pago_dialog.dart';
+import 'marcador_tv_page.dart';
+import 'marcador_mando_auxiliar.dart';
 
 class CanchasPage extends StatefulWidget {
   const CanchasPage({super.key});
@@ -14,6 +20,17 @@ class CanchasPage extends StatefulWidget {
 class _CanchasPageState extends State<CanchasPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final _formKey = GlobalKey<FormState>();
+
+  // 🚨 El bridge de WhatsApp exige un ID token de admin desde que se le
+  // agregó autenticación — esta llamada nunca mandaba el header y fallaba
+  // en silencio (401) desde entonces.
+  Future<Map<String, String>> _headersWhatsapp() async {
+    final token = await FirebaseAuth.instance.currentUser?.getIdToken();
+    return {
+      'Content-Type': 'application/json',
+      if (token != null) 'Authorization': 'Bearer $token',
+    };
+  }
 
   // Elementos Visuales de Equipamiento
   bool _alquilaPaleta = false;
@@ -45,10 +62,29 @@ class _CanchasPageState extends State<CanchasPage> {
   String _busquedaSocio = "";
   Map<String, dynamic>? _socioElegido;
 
+  // 💸 Antes la búsqueda de socio acá streameaba en vivo TODA la colección
+  // (recreando el listener en cada tecla tipeada, o sea releyendo la
+  // colección entera por letra). Ahora se trae una sola vez al abrir la
+  // pantalla y se filtra en memoria.
+  List<QueryDocumentSnapshot> _todosLosSocios = [];
+  bool _cargandoSocios = true;
+
+  Future<void> _cargarSocios() async {
+    setState(() => _cargandoSocios = true);
+    final snap = await _firestore.collection('socios').get();
+    if (mounted) {
+      setState(() {
+        _todosLosSocios = snap.docs;
+        _cargandoSocios = false;
+      });
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     _cargarTarifarioGlobal();
+    _cargarSocios();
   }
 
   @override
@@ -188,15 +224,169 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
 ''';
 
     try {
-      await http.post(
-        // ✅ Corrección a aplicar:
+      final resp = await http.post(
         Uri.parse('https://servicio-whatsapp-oqua.onrender.com/send-whatsapp'),
-        headers: {'Content-Type': 'application/json'},
+        headers: await _headersWhatsapp(),
         body: jsonEncode({'phone': telefonoLimpio, 'message': mensaje}),
       );
+      if (resp.statusCode != 200) {
+        debugPrint(
+          '⚠️ Notificación WhatsApp no enviada (${resp.statusCode}): ${resp.body}',
+        );
+        _avisarFalloWhatsapp();
+      }
     } catch (e) {
-      print('⚠️ No se pudo enviar la notificación de WhatsApp: $e');
+      debugPrint('⚠️ No se pudo enviar la notificación de WhatsApp: $e');
+      _avisarFalloWhatsapp();
     }
+  }
+
+  // 🚨 Antes un envío fallido sólo quedaba en debugPrint (invisible en
+  // release) — el staff nunca se enteraba de que el socio no recibió la
+  // confirmación de su turno.
+  void _avisarFalloWhatsapp() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('⚠️ No se pudo enviar la confirmación por WhatsApp.'),
+        backgroundColor: Colors.orange,
+      ),
+    );
+  }
+
+  static const List<String> _nombresDias = [
+    'Lunes',
+    'Martes',
+    'Miércoles',
+    'Jueves',
+    'Viernes',
+    'Sábado',
+    'Domingo',
+  ];
+
+  // 🔁 Mismo criterio que el self-service (reserva_cancha_screen.dart):
+  // reusa la cancha/horario/fecha ya cargados en el formulario — la fecha
+  // elegida define qué día de la semana se repite. Útil para abonos que el
+  // staff arregla de palabra en el mostrador.
+  Future<void> _asignarTurnoFijo() async {
+    if (_canchaSel == null || _horaInicioSeleccionada == null) {
+      _snack('Elegí cancha y horario primero.', Colors.orange);
+      return;
+    }
+    if (_tipoCliente != 'Socio' || _socioIdSeleccionado == null) {
+      _snack('El turno fijo sólo se puede asignar a un socio.', Colors.orange);
+      return;
+    }
+    final String nombreFinal =
+        '${_socioElegido?['nombre'] ?? ''} ${_socioElegido?['apellido'] ?? ''}'
+            .trim();
+    final String dia = _nombresDias[_fechaSeleccionada.weekday - 1];
+
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('¿Asignar turno fijo?'),
+        content: Text(
+          '$nombreFinal va a tener reservado todos los $dia a las '
+          '$_horaInicioSeleccionada:00hs en $_canchaSel, automáticamente, '
+          'hasta que se cancele.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Confirmar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmar != true || !mounted) return;
+
+    try {
+      final resp = await FirebaseFunctions.instance
+          .httpsCallable('crearTurnoRecurrenteCanchaStaff')
+          .call({
+            'socioId': _socioIdSeleccionado,
+            'nombreCliente': nombreFinal,
+            'cancha': _canchaSel,
+            'diaSemana': _fechaSeleccionada.weekday,
+            'horaInicio': _horaInicioSeleccionada,
+            'duracionHoras': _duracionSeleccionada,
+          });
+      if (!mounted) return;
+      if (resp.data['success'] == true) {
+        _snack('Turno fijo asignado a $nombreFinal.', Colors.green);
+      } else {
+        _snack(
+          resp.data['error'] ?? 'No se pudo asignar el turno fijo.',
+          Colors.red,
+        );
+      }
+    } catch (e) {
+      if (mounted) _snack('Error: $e', Colors.red);
+    }
+  }
+
+  Future<void> _mostrarTurnosFijosActivos() async {
+    final snap = await _firestore
+        .collection('turnos_recurrentes_canchas')
+        .where('activo', isEqualTo: true)
+        .get();
+    if (!mounted) return;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setModalState) {
+          final docs = [...snap.docs];
+          return AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Text('Turnos fijos activos'),
+            content: SizedBox(
+              width: 380,
+              child: docs.isEmpty
+                  ? const Text('No hay turnos fijos activos.')
+                  : Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: docs.map((doc) {
+                        final d = doc.data();
+                        final String dia = _nombresDias[((d['diaSemana'] as num?)?.toInt() ?? 1) - 1];
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(d['nombreCliente']?.toString() ?? '-'),
+                          subtitle: Text('$dia ${d['horaInicio']}:00hs - ${d['cancha']}'),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.delete_outline, color: Colors.red),
+                            tooltip: 'Cancelar turno fijo',
+                            onPressed: () async {
+                              try {
+                                await FirebaseFunctions.instance
+                                    .httpsCallable('cancelarTurnoRecurrenteCancha')
+                                    .call({'turnoId': doc.id});
+                                docs.remove(doc);
+                                setModalState(() {});
+                              } catch (e) {
+                                if (context.mounted) _snack('Error: $e', Colors.red);
+                              }
+                            },
+                          ),
+                        );
+                      }).toList(),
+                    ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cerrar'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   Future<void> _registrarReserva() async {
@@ -265,37 +455,36 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
     );
 
     try {
-      final snapshotCanchas = await _firestore
-          .collection('reservas_canchas')
-          .get();
-      for (var doc in snapshotCanchas.docs) {
-        final r = ReservaCanchaModel.fromFirestore(doc.id, doc.data());
-        final String fId = "${r.fecha.year}-${r.fecha.month}-${r.fecha.day}";
-
-        if (fId == fechaIdStr && r.cancha == _canchaSel!) {
-          int rInicio = r.horaInicio;
-          int rFin = rInicio + r.duracionHoras;
-
-          for (
-            int h = _horaInicioSeleccionada!;
-            h < _horaInicioSeleccionada! + _duracionSeleccionada;
-            h++
-          ) {
-            if (h >= rInicio && h < rFin) {
-              _snack(
-                'Solapamiento detectado. El bloque ya se encuentra reservado.',
-                Colors.red,
-              );
-              return;
-            }
-          }
-        }
+      // 🚨 Antes esto chequeaba solapamiento con un `get()` y recién después
+      // escribía la reserva con un `set()` aparte: dos reservas confirmadas
+      // casi al mismo tiempo podían pasar las dos ese chequeo (TOCTOU) y
+      // terminar pisándose o duplicando el horario. Ahora todo el chequeo +
+      // escritura es atómico (ver reserva_cancha_repository.dart).
+      try {
+        await reservarCanchaAtomica(
+          firestore: _firestore,
+          reserva: nuevaReserva,
+        );
+      } on HorarioOcupadoException {
+        _snack(
+          'Solapamiento detectado. El bloque ya se encuentra reservado.',
+          Colors.red,
+        );
+        return;
       }
 
-      await _firestore
-          .collection('reservas_canchas')
-          .doc(reservaId)
-          .set(nuevaReserva.toFirestore());
+      // 🧾💳 MERCADO PAGO REAL: antes era sólo una etiqueta que el staff
+      // tildaba a mano sin ninguna verificación. Reutiliza el mismo diálogo
+      // (y el mismo par de Cloud Functions) que ya se conectó en el POS.
+      if (_metodoPagoSel == 'Mercado Pago' && mounted) {
+        await mostrarSelectorCobroMercadoPago(
+          context,
+          ruta: 'reservas_canchas/$reservaId',
+          campoMonto: 'precio',
+          campoMedioPago: 'metodoPago',
+          concepto: 'Reserva $_canchaSel - $nombreFinal',
+        );
+      }
 
       // 📲 DISPARO AUTOMÁTICO DE WHATSAPP
       final String? telefonoSocio =
@@ -444,10 +633,13 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
               style: TextButton.styleFrom(foregroundColor: Colors.red),
               onPressed: () async {
                 Navigator.pop(context);
-                await _firestore
-                    .collection('reservas_canchas')
-                    .doc(reserva.id)
-                    .delete();
+                // 🚨 Antes sólo borraba el doc de la reserva: los slots de
+                // hora ocupada quedaban huérfanos y esas horas se mostraban
+                // como ocupadas para siempre. Ahora libera todo junto.
+                await cancelarReservaCanchaAtomica(
+                  firestore: _firestore,
+                  reserva: reserva,
+                );
                 _snack(
                   '🔓 Cancha liberada. El turno vuelve a estar disponible.',
                   Colors.green,
@@ -719,575 +911,614 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
     final fechaIdStr =
         "${_fechaSeleccionada.year}-${_fechaSeleccionada.month}-${_fechaSeleccionada.day}";
 
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
-      body: Padding(
-        padding: const EdgeInsets.all(40.0),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              flex: 2,
-              child: Container(
-                padding: const EdgeInsets.all(32),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: const Color(0xFFE2E8F0)),
+    // 📱 Panel izquierdo: formulario de nueva reserva. Se arma como closure
+    // para reutilizar exactamente el mismo contenido en el layout ancho (Row
+    // de dos columnas) y en el apilado vertical de celular.
+    Widget panelNuevaReserva({required bool movil}) {
+      final contenidoFormulario = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Nueva Reserva de Paddle',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 24),
+          DropdownButtonFormField<String>(
+            initialValue: _tipoCliente,
+            decoration: const InputDecoration(
+              labelText: 'Tipo de Cliente',
+              border: OutlineInputBorder(),
+            ),
+            items: const [
+              DropdownMenuItem(value: 'Socio', child: Text('Socio del Club')),
+              DropdownMenuItem(
+                value: 'Externo',
+                child: Text('Externo (No Socio)'),
+              ),
+            ],
+            onChanged: (val) {
+              if (val != null) {
+                setState(() {
+                  _tipoCliente = val;
+                  _metodoPagoSel = val == 'Socio'
+                      ? 'Cuenta Corriente'
+                      : 'Efectivo';
+                  _socioIdSeleccionado = null;
+                  _socioElegido = null;
+                });
+              }
+            },
+          ),
+          const SizedBox(height: 20),
+          if (_tipoCliente == 'Socio') ...[
+            if (_socioElegido == null) ...[
+              TextFormField(
+                decoration: const InputDecoration(
+                  labelText: 'Buscar Socio...',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.search),
                 ),
-                child: Form(
-                  key: _formKey,
-                  child: SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Nueva Reserva de Paddle',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 24),
-                        DropdownButtonFormField<String>(
-                          initialValue: _tipoCliente,
-                          decoration: const InputDecoration(
-                            labelText: 'Tipo de Cliente',
-                            border: OutlineInputBorder(),
-                          ),
-                          items: const [
-                            DropdownMenuItem(
-                              value: 'Socio',
-                              child: Text('Socio del Club'),
-                            ),
-                            DropdownMenuItem(
-                              value: 'Externo',
-                              child: Text('Externo (No Socio)'),
-                            ),
-                          ],
-                          onChanged: (val) {
-                            if (val != null) {
-                              setState(() {
-                                _tipoCliente = val;
-                                _metodoPagoSel = val == 'Socio'
-                                    ? 'Cuenta Corriente'
-                                    : 'Efectivo';
-                                _socioIdSeleccionado = null;
-                                _socioElegido = null;
-                              });
-                            }
-                          },
-                        ),
-                        const SizedBox(height: 20),
-                        if (_tipoCliente == 'Socio') ...[
-                          if (_socioElegido == null) ...[
-                            TextFormField(
-                              decoration: const InputDecoration(
-                                labelText: 'Buscar Socio...',
-                                border: OutlineInputBorder(),
-                                prefixIcon: Icon(Icons.search),
-                              ),
-                              onChanged: (v) => setState(
-                                () => _busquedaSocio = v.toLowerCase(),
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            if (_busquedaSocio.length >= 3)
-                              Container(
-                                constraints: const BoxConstraints(
-                                  maxHeight: 150,
-                                ),
-                                decoration: BoxDecoration(
-                                  border: Border.all(
-                                    color: const Color(0xFFE2E8F0),
-                                  ),
-                                  borderRadius: BorderRadius.circular(8),
-                                  color: Colors.white,
-                                ),
-                                child: StreamBuilder<QuerySnapshot>(
-                                  stream: _firestore
-                                      .collection('socios')
-                                      .snapshots(),
-                                  builder: (context, snapshot) {
-                                    if (!snapshot.hasData)
-                                      return const Center(
-                                        child: LinearProgressIndicator(),
-                                      );
-                                    final filtrados = snapshot.data!.docs.where(
-                                      (doc) {
-                                        final d =
-                                            doc.data() as Map<String, dynamic>;
-                                        final nombre = (d['nombre'] ?? '')
-                                            .toString()
-                                            .toLowerCase();
-                                        final apellido = (d['apellido'] ?? '')
-                                            .toString()
-                                            .toLowerCase();
-                                        final dni = (d['dni'] ?? '')
-                                            .toString()
-                                            .toLowerCase();
-                                        return nombre.contains(
-                                              _busquedaSocio,
-                                            ) ||
-                                            apellido.contains(_busquedaSocio) ||
-                                            dni.contains(_busquedaSocio);
-                                      },
-                                    ).toList();
+                onChanged: (v) =>
+                    setState(() => _busquedaSocio = v.toLowerCase()),
+              ),
+              const SizedBox(height: 10),
+              if (_busquedaSocio.length >= 3)
+                Container(
+                  constraints: const BoxConstraints(maxHeight: 150),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                    borderRadius: BorderRadius.circular(8),
+                    color: Colors.white,
+                  ),
+                  child: Builder(
+                    builder: (context) {
+                      if (_cargandoSocios) {
+                        return const Center(child: LinearProgressIndicator());
+                      }
+                      final filtrados = _todosLosSocios.where((doc) {
+                        final d = doc.data() as Map<String, dynamic>;
+                        final nombre = (d['nombre'] ?? '')
+                            .toString()
+                            .toLowerCase();
+                        final apellido = (d['apellido'] ?? '')
+                            .toString()
+                            .toLowerCase();
+                        final dni = (d['dni'] ?? '').toString().toLowerCase();
+                        return nombre.contains(_busquedaSocio) ||
+                            apellido.contains(_busquedaSocio) ||
+                            dni.contains(_busquedaSocio);
+                      }).toList();
 
-                                    if (filtrados.isEmpty) {
-                                      return const Padding(
-                                        padding: EdgeInsets.all(16.0),
-                                        child: Text(
-                                          'No hay coincidencias.',
-                                          style: TextStyle(
-                                            color: Colors.grey,
-                                            fontSize: 13,
-                                          ),
-                                        ),
-                                      );
-                                    }
-
-                                    return ListView.builder(
-                                      shrinkWrap: true,
-                                      itemCount: filtrados.length,
-                                      itemBuilder: (context, idx) {
-                                        final doc = filtrados[idx];
-                                        final d =
-                                            doc.data() as Map<String, dynamic>;
-                                        return ListTile(
-                                          title: Text(
-                                            '${d['nombre'] ?? ''} ${d['apellido'] ?? ''}'
-                                                .trim(),
-                                          ),
-                                          subtitle: Text(
-                                            'DNI: ${d['dni'] ?? 'S/D'}',
-                                          ),
-                                          onTap: () => setState(() {
-                                            _socioElegido = d;
-                                            _socioIdSeleccionado = doc.id;
-                                          }),
-                                        );
-                                      },
-                                    );
-                                  },
-                                ),
-                              ),
-                          ] else ...[
-                            Card(
-                              color: const Color(0xFFEFF6FF),
-                              child: ListTile(
-                                leading: const Icon(
-                                  Icons.check_circle,
-                                  color: Colors.blue,
-                                ),
-                                title: Text(
-                                  '${_socioElegido!['nombre'] ?? ''} ${_socioElegido!['apellido'] ?? ''}'
-                                      .trim(),
-                                ),
-                                trailing: IconButton(
-                                  icon: const Icon(
-                                    Icons.close,
-                                    color: Colors.red,
-                                  ),
-                                  onPressed: () =>
-                                      setState(() => _socioElegido = null),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ] else ...[
-                          TextFormField(
-                            controller: _clienteController,
-                            decoration: const InputDecoration(
-                              labelText: 'Responsable Externo',
-                              border: OutlineInputBorder(),
-                              prefixIcon: Icon(Icons.person_outline),
-                            ),
-                            validator: (v) => v == null || v.isEmpty
-                                ? 'Ingresa el nombre'
-                                : null,
-                          ),
-                        ],
-                        const SizedBox(height: 20),
-                        InputDecorator(
-                          decoration: const InputDecoration(
-                            labelText: 'Cancha y Horario Seleccionado',
-                            border: OutlineInputBorder(),
-                            prefixIcon: Icon(Icons.sports_tennis),
-                          ),
+                      if (filtrados.isEmpty) {
+                        return const Padding(
+                          padding: EdgeInsets.all(16.0),
                           child: Text(
-                            _canchaSel != null &&
-                                    _horaInicioSeleccionada != null
-                                ? '$_canchaSel - ${_horaInicioSeleccionada!.toString().padLeft(2, '0')}:00 hs'
-                                : 'Toca una celda libre en la grilla',
-                            style: TextStyle(
-                              color: _canchaSel != null
-                                  ? Colors.black
-                                  : Colors.grey,
-                              fontWeight: _canchaSel != null
-                                  ? FontWeight.bold
-                                  : Alignment.topLeft == null
-                                  ? FontWeight.normal
-                                  : FontWeight.bold,
-                              fontSize: 13,
+                            'No hay coincidencias.',
+                            style: TextStyle(color: Colors.grey, fontSize: 13),
+                          ),
+                        );
+                      }
+
+                      return ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: filtrados.length,
+                        itemBuilder: (context, idx) {
+                          final doc = filtrados[idx];
+                          final d = doc.data() as Map<String, dynamic>;
+                          return ListTile(
+                            title: Text(
+                              '${d['nombre'] ?? ''} ${d['apellido'] ?? ''}'
+                                  .trim(),
                             ),
-                          ),
-                        ),
-                        const SizedBox(height: 20),
-                        DropdownButtonFormField<int>(
-                          initialValue: _duracionSeleccionada,
-                          decoration: const InputDecoration(
-                            labelText: 'Duración de la Reserva',
-                            border: OutlineInputBorder(),
-                            prefixIcon: Icon(Icons.schedule_rounded),
-                          ),
-                          items: const [
-                            DropdownMenuItem(value: 1, child: Text('1 Hora')),
-                            DropdownMenuItem(
-                              value: 2,
-                              child: Text('2 Horas (Turno Doble)'),
-                            ),
-                          ],
-                          onChanged: (val) =>
-                              setState(() => _duracionSeleccionada = val ?? 1),
-                        ),
-                        const SizedBox(height: 20),
-                        DropdownButtonFormField<String>(
-                          initialValue: _metodoPagoSel,
-                          decoration: const InputDecoration(
-                            labelText: 'Método de Pago',
-                            border: OutlineInputBorder(),
-                          ),
-                          items: [
-                            if (_tipoCliente == 'Socio')
-                              const DropdownMenuItem(
-                                value: 'Cuenta Corriente',
-                                child: Text('Cuenta Corriente 📋'),
-                              ),
-                            const DropdownMenuItem(
-                              value: 'Efectivo',
-                              child: Text('Efectivo ARS'),
-                            ),
-                            const DropdownMenuItem(
-                              value: 'Mercado Pago',
-                              child: Text('Mercado Pago'),
-                            ),
-                          ],
-                          onChanged: (val) => setState(
-                            () => _metodoPagoSel = val ?? 'Efectivo',
-                          ),
-                        ),
-                        const SizedBox(height: 20),
-                        const Text(
-                          'Equipamiento Adicional:',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 14,
-                          ),
-                        ),
-                        CheckboxListTile(
-                          title: Text(
-                            'Alquiler de Paleta (+\$${_precioPaletaAnexo.toStringAsFixed(0)} /hr)',
-                          ),
-                          value: _alquilaPaleta,
-                          dense: true,
-                          contentPadding: EdgeInsets.zero,
-                          controlAffinity: ListTileControlAffinity.leading,
-                          onChanged: (val) =>
-                              setState(() => _alquilaPaleta = val ?? false),
-                        ),
-                        CheckboxListTile(
-                          title: Text(
-                            'Alquiler Tubo de Pelotas (+\$${_precioPelotasAnexo.toStringAsFixed(0)} /hr)',
-                          ),
-                          value: _alquilaPelotas,
-                          dense: true,
-                          contentPadding: EdgeInsets.zero,
-                          controlAffinity: ListTileControlAffinity.leading,
-                          onChanged: (val) =>
-                              setState(() => _alquilaPelotas = val ?? false),
-                        ),
-                        const SizedBox(height: 24),
-                        Container(
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF1F5F9),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: const Color(0xFFE2E8F0)),
-                          ),
-                          child: Column(
-                            children: [
-                              Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
-                                children: [
-                                  const Text(
-                                    'Precio Cancha (Base):',
-                                    style: TextStyle(
-                                      color: Colors.grey,
-                                      fontSize: 13,
-                                    ),
-                                  ),
-                                  Text(
-                                    '\$${(precioBaseActual * _duracionSeleccionada).toStringAsFixed(0)}',
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              if (_horaInicioSeleccionada != null &&
-                                  _horaInicioSeleccionada! >=
-                                      _horaInicioCarga) ...[
-                                const SizedBox(height: 6),
-                                Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    const Text(
-                                      'Plus Nocturno (Luz):',
-                                      style: TextStyle(
-                                        color: Colors.grey,
-                                        fontSize: 13,
-                                      ),
-                                    ),
-                                    Text(
-                                      '+\$${(_plusLuzAnexo * _duracionSeleccionada).toStringAsFixed(0)}',
-                                      style: const TextStyle(
-                                        color: Colors.orange,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                              if (_alquilaPaleta || _alquilaPelotas) ...[
-                                const SizedBox(height: 6),
-                                Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    const Text(
-                                      'Equipamiento Adicional:',
-                                      style: TextStyle(
-                                        color: Colors.grey,
-                                        fontSize: 13,
-                                      ),
-                                    ),
-                                    Text(
-                                      '+\$${((_alquilaPaleta ? _precioPaletaAnexo : 0) + (_alquilaPelotas ? _precioPelotasAnexo : 0) * _duracionSeleccionada).toStringAsFixed(0)}',
-                                      style: const TextStyle(
-                                        color: Colors.blue,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                              const Padding(
-                                padding: EdgeInsets.symmetric(vertical: 8.0),
-                                child: Divider(height: 1),
-                              ),
-                              Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
-                                children: [
-                                  const Text(
-                                    'TOTAL A COBRAR:',
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 15,
-                                    ),
-                                  ),
-                                  Text(
-                                    '\$${totalReservaEnTiempoReal.toStringAsFixed(0)}',
-                                    style: const TextStyle(
-                                      fontSize: 22,
-                                      fontWeight: FontWeight.w900,
-                                      color: Colors.green,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 32),
-                        ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF0F172A),
-                            foregroundColor: Colors.white,
-                            minimumSize: const Size.fromHeight(50),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                          onPressed: _registrarReserva,
-                          child: const Text(
-                            'Confirmar Turno & Enviar a Caja',
-                            style: TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                        ),
-                      ],
-                    ),
+                            subtitle: Text('DNI: ${d['dni'] ?? 'S/D'}'),
+                            onTap: () => setState(() {
+                              _socioElegido = d;
+                              _socioIdSeleccionado = doc.id;
+                            }),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+            ] else ...[
+              Card(
+                color: const Color(0xFFEFF6FF),
+                child: ListTile(
+                  leading: const Icon(Icons.check_circle, color: Colors.blue),
+                  title: Text(
+                    '${_socioElegido!['nombre'] ?? ''} ${_socioElegido!['apellido'] ?? ''}'
+                        .trim(),
+                  ),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.close, color: Colors.red),
+                    onPressed: () => setState(() => _socioElegido = null),
                   ),
                 ),
               ),
+            ],
+          ] else ...[
+            TextFormField(
+              controller: _clienteController,
+              decoration: const InputDecoration(
+                labelText: 'Responsable Externo',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.person_outline),
+              ),
+              validator: (v) =>
+                  v == null || v.isEmpty ? 'Ingresa el nombre' : null,
             ),
-            const SizedBox(width: 40),
-            Expanded(
-              flex: 3,
-              child: Container(
-                padding: const EdgeInsets.all(32),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: const Color(0xFFE2E8F0)),
+          ],
+          const SizedBox(height: 20),
+          InputDecorator(
+            decoration: const InputDecoration(
+              labelText: 'Cancha y Horario Seleccionado',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.sports_tennis),
+            ),
+            child: Text(
+              _canchaSel != null && _horaInicioSeleccionada != null
+                  ? '$_canchaSel - ${_horaInicioSeleccionada!.toString().padLeft(2, '0')}:00 hs'
+                  : 'Toca una celda libre en la grilla',
+              style: TextStyle(
+                color: _canchaSel != null ? Colors.black : Colors.grey,
+                fontWeight: _canchaSel != null
+                    ? FontWeight.bold
+                    : Alignment.topLeft == null
+                    ? FontWeight.normal
+                    : FontWeight.bold,
+                fontSize: 13,
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          DropdownButtonFormField<int>(
+            initialValue: _duracionSeleccionada,
+            decoration: const InputDecoration(
+              labelText: 'Duración de la Reserva',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.schedule_rounded),
+            ),
+            items: const [
+              DropdownMenuItem(value: 1, child: Text('1 Hora')),
+              DropdownMenuItem(value: 2, child: Text('2 Horas (Turno Doble)')),
+            ],
+            onChanged: (val) =>
+                setState(() => _duracionSeleccionada = val ?? 1),
+          ),
+          const SizedBox(height: 20),
+          DropdownButtonFormField<String>(
+            initialValue: _metodoPagoSel,
+            decoration: const InputDecoration(
+              labelText: 'Método de Pago',
+              border: OutlineInputBorder(),
+            ),
+            items: [
+              if (_tipoCliente == 'Socio')
+                const DropdownMenuItem(
+                  value: 'Cuenta Corriente',
+                  child: Text('Cuenta Corriente 📋'),
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+              const DropdownMenuItem(
+                value: 'Efectivo',
+                child: Text('Efectivo ARS'),
+              ),
+              const DropdownMenuItem(
+                value: 'Mercado Pago',
+                child: Text('Mercado Pago'),
+              ),
+            ],
+            onChanged: (val) =>
+                setState(() => _metodoPagoSel = val ?? 'Efectivo'),
+          ),
+          const SizedBox(height: 20),
+          const Text(
+            'Equipamiento Adicional:',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+          ),
+          CheckboxListTile(
+            title: Text(
+              'Alquiler de Paleta (+\$${_precioPaletaAnexo.toStringAsFixed(0)} /hr)',
+            ),
+            value: _alquilaPaleta,
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            onChanged: (val) => setState(() => _alquilaPaleta = val ?? false),
+          ),
+          CheckboxListTile(
+            title: Text(
+              'Alquiler Tubo de Pelotas (+\$${_precioPelotasAnexo.toStringAsFixed(0)} /hr)',
+            ),
+            value: _alquilaPelotas,
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            onChanged: (val) => setState(() => _alquilaPelotas = val ?? false),
+          ),
+          const SizedBox(height: 24),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF1F5F9),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+            ),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text(
-                          'Disponibilidad de Canchas',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        Row(
-                          children: [
-                            IconButton(
-                              tooltip: 'Purgar Reservas de Días Anteriores',
-                              icon: const Icon(
-                                Icons.cleaning_services_rounded,
-                                color: Colors.teal,
-                              ),
-                              onPressed: _anularReservasHistoricasViejas,
-                            ),
-                            const SizedBox(width: 8),
-                            TextButton.icon(
-                              onPressed: () async {
-                                final picked = await showDatePicker(
-                                  context: context,
-                                  initialDate: _fechaSeleccionada,
-                                  firstDate: DateTime.now().subtract(
-                                    const Duration(days: 7),
-                                  ),
-                                  lastDate: DateTime.now().add(
-                                    const Duration(days: 30),
-                                  ),
-                                );
-                                if (picked != null)
-                                  setState(() => _fechaSeleccionada = picked);
-                              },
-                              icon: const Icon(Icons.calendar_month),
-                              label: Text(
-                                '${_fechaSeleccionada.day}/${_fechaSeleccionada.month}/${_fechaSeleccionada.year}',
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
+                    const Text(
+                      'Precio Cancha (Base):',
+                      style: TextStyle(color: Colors.grey, fontSize: 13),
                     ),
-                    const SizedBox(height: 24),
-                    Expanded(
-                      child: StreamBuilder<DocumentSnapshot>(
-                        stream: _firestore
-                            .collection('configuracion_paddle')
-                            .doc('canchas')
-                            .snapshots(),
-                        builder: (context, configSnapshot) {
-                          List<String> canchasDinamicas = [
-                            "Cancha 1 Cristal",
-                            "Cancha 2 Cristal",
-                            "Cancha 3 Muro",
-                          ];
-
-                          if (configSnapshot.hasData &&
-                              configSnapshot.data!.exists) {
-                            final configData =
-                                configSnapshot.data!.data()
-                                    as Map<String, dynamic>?;
-                            if (configData != null &&
-                                configData['lista'] != null) {
-                              canchasDinamicas = List<String>.from(
-                                configData['lista'],
-                              );
-                            }
-                          }
-
-                          return StreamBuilder<QuerySnapshot>(
-                            stream: _firestore
-                                .collection('reservas_canchas')
-                                .snapshots(),
-                            builder: (context, snapshot) {
-                              if (!snapshot.hasData)
-                                return const Center(
-                                  child: CircularProgressIndicator(),
-                                );
-
-                              final mapaReservas = {
-                                for (var doc in snapshot.data!.docs)
-                                  doc.id: ReservaCanchaModel.fromFirestore(
-                                    doc.id,
-                                    doc.data() as Map<String, dynamic>,
-                                  ),
-                              };
-
-                              return ListView.builder(
-                                itemCount: canchasDinamicas.length,
-                                itemBuilder: (context, cIdx) {
-                                  final canchaNombre = canchasDinamicas[cIdx];
-                                  return Container(
-                                    margin: const EdgeInsets.only(bottom: 16),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFF8FAFC),
-                                      borderRadius: BorderRadius.circular(12),
-                                      border: Border.all(
-                                        color: const Color(0xFFE2E8F0),
-                                      ),
-                                    ),
-                                    child: ExpansionTile(
-                                      initiallyExpanded: cIdx == 0,
-                                      title: Text(
-                                        canchaNombre,
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                      children: [
-                                        Container(
-                                          color: Colors.white,
-                                          padding: const EdgeInsets.all(16),
-                                          child: Wrap(
-                                            spacing: 12,
-                                            runSpacing: 12,
-                                            children: _generarBloquesHorarios(
-                                              canchaNombre,
-                                              mapaReservas,
-                                              fechaIdStr,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                },
-                              );
-                            },
-                          );
-                        },
+                    Text(
+                      '\$${(precioBaseActual * _duracionSeleccionada).toStringAsFixed(0)}',
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+                if (_horaInicioSeleccionada != null &&
+                    _horaInicioSeleccionada! >= _horaInicioCarga) ...[
+                  const SizedBox(height: 6),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Plus Nocturno (Luz):',
+                        style: TextStyle(color: Colors.grey, fontSize: 13),
+                      ),
+                      Text(
+                        '+\$${(_plusLuzAnexo * _duracionSeleccionada).toStringAsFixed(0)}',
+                        style: const TextStyle(
+                          color: Colors.orange,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+                if (_alquilaPaleta || _alquilaPelotas) ...[
+                  const SizedBox(height: 6),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Equipamiento Adicional:',
+                        style: TextStyle(color: Colors.grey, fontSize: 13),
+                      ),
+                      Text(
+                        '+\$${((_alquilaPaleta ? _precioPaletaAnexo : 0) + (_alquilaPelotas ? _precioPelotasAnexo : 0) * _duracionSeleccionada).toStringAsFixed(0)}',
+                        style: const TextStyle(
+                          color: Colors.blue,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8.0),
+                  child: Divider(height: 1),
+                ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'TOTAL A COBRAR:',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
+                      ),
+                    ),
+                    Text(
+                      '\$${totalReservaEnTiempoReal.toStringAsFixed(0)}',
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w900,
+                        color: Colors.green,
                       ),
                     ),
                   ],
                 ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 32),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF0F172A),
+              foregroundColor: Colors.white,
+              minimumSize: const Size.fromHeight(50),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            onPressed: _registrarReserva,
+            child: const Text(
+              'Confirmar Turno & Enviar a Caja',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(46)),
+            icon: const Icon(Icons.event_repeat_rounded, size: 18),
+            label: const Text('Asignar turno fijo semanal (abono)'),
+            onPressed: _asignarTurnoFijo,
+          ),
+        ],
+      );
+
+      return Container(
+        padding: EdgeInsets.all(movil ? 20 : 32),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFE2E8F0)),
+        ),
+        child: Form(
+          key: _formKey,
+          // En celular el scroll lo maneja la columna exterior: un
+          // SingleChildScrollView vertical dentro de una altura no acotada
+          // reventaría con "Vertical viewport was given unbounded height".
+          child: movil
+              ? contenidoFormulario
+              : SingleChildScrollView(child: contenidoFormulario),
+        ),
+      );
+    }
+
+    // 📱 Panel derecho: grilla de disponibilidad de canchas.
+    Widget panelDisponibilidad({required bool movil}) {
+      const tituloGrilla = Text(
+        'Disponibilidad de Canchas',
+        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+      );
+
+      final accionesGrilla = Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: 'Purgar Reservas de Días Anteriores',
+            icon: const Icon(
+              Icons.cleaning_services_rounded,
+              color: Colors.teal,
+            ),
+            onPressed: _anularReservasHistoricasViejas,
+          ),
+          IconButton(
+            tooltip: 'Turnos fijos (abonos)',
+            icon: const Icon(Icons.event_repeat_rounded, color: Colors.indigo),
+            onPressed: _mostrarTurnosFijosActivos,
+          ),
+          const SizedBox(width: 8),
+          TextButton.icon(
+            onPressed: () async {
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: _fechaSeleccionada,
+                firstDate: DateTime.now().subtract(const Duration(days: 7)),
+                lastDate: DateTime.now().add(const Duration(days: 30)),
+              );
+              if (picked != null) {
+                setState(() => _fechaSeleccionada = picked);
+              }
+            },
+            icon: const Icon(Icons.calendar_month),
+            label: Text(
+              '${_fechaSeleccionada.day}/${_fechaSeleccionada.month}/${_fechaSeleccionada.year}',
+            ),
+          ),
+        ],
+      );
+
+      return Container(
+        padding: EdgeInsets.all(movil ? 16 : 32),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFE2E8F0)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 📱 En pantalla angosta el título y los botones de acción no
+            // entran en la misma línea: se apilan.
+            if (movil) ...[
+              tituloGrilla,
+              const SizedBox(height: 8),
+              accionesGrilla,
+            ] else
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [tituloGrilla, accionesGrilla],
+              ),
+            SizedBox(height: movil ? 16 : 24),
+            Expanded(
+              child: StreamBuilder<DocumentSnapshot>(
+                stream: _firestore
+                    .collection('configuracion_paddle')
+                    .doc('canchas')
+                    .snapshots(),
+                builder: (context, configSnapshot) {
+                  List<String> canchasDinamicas = [
+                    "Cancha 1 Cristal",
+                    "Cancha 2 Cristal",
+                    "Cancha 3 Muro",
+                  ];
+
+                  if (configSnapshot.hasData && configSnapshot.data!.exists) {
+                    final configData =
+                        configSnapshot.data!.data() as Map<String, dynamic>?;
+                    if (configData != null && configData['lista'] != null) {
+                      canchasDinamicas = List<String>.from(configData['lista']);
+                    }
+                  }
+
+                  // 🚨 Antes esto traía TODA la colección 'reservas_canchas'
+                  // sin filtro sólo para armar la grilla del día elegido —
+                  // cada reserva nueva de cualquier día disparaba el
+                  // listener completo, y la lectura crecía sin techo con
+                  // los meses. Ahora se acota al rango del día seleccionado
+                  // (mismo campo 'fecha' que ya usa ReservaCanchaModel).
+                  return StreamBuilder<QuerySnapshot>(
+                    stream: _firestore
+                        .collection('reservas_canchas')
+                        .where(
+                          'fecha',
+                          isGreaterThanOrEqualTo: Timestamp.fromDate(
+                            DateTime(_fechaSeleccionada.year, _fechaSeleccionada.month, _fechaSeleccionada.day),
+                          ),
+                        )
+                        .where(
+                          'fecha',
+                          isLessThan: Timestamp.fromDate(
+                            DateTime(_fechaSeleccionada.year, _fechaSeleccionada.month, _fechaSeleccionada.day)
+                                .add(const Duration(days: 1)),
+                          ),
+                        )
+                        .snapshots(),
+                    builder: (context, snapshot) {
+                      if (!snapshot.hasData)
+                        return const Center(child: CircularProgressIndicator());
+
+                      final mapaReservas = {
+                        for (var doc in snapshot.data!.docs)
+                          doc.id: ReservaCanchaModel.fromFirestore(
+                            doc.id,
+                            doc.data() as Map<String, dynamic>,
+                          ),
+                      };
+
+                      return ListView.builder(
+                        itemCount: canchasDinamicas.length,
+                        itemBuilder: (context, cIdx) {
+                          final canchaNombre = canchasDinamicas[cIdx];
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 16),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF8FAFC),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: const Color(0xFFE2E8F0),
+                              ),
+                            ),
+                            child: ExpansionTile(
+                              initiallyExpanded: cIdx == 0,
+                              title: Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      canchaNombre,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Marcador en TV / Proyector',
+                                    icon: const Icon(
+                                      Icons.tv_rounded,
+                                      color: Colors.indigo,
+                                    ),
+                                    onPressed: () => Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => MarcadorTvPage(
+                                          canchaNombre: canchaNombre,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Mando Auxiliar de Marcador',
+                                    icon: const Icon(
+                                      Icons.sports_tennis,
+                                      color: Colors.teal,
+                                    ),
+                                    onPressed: () => Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) =>
+                                            MarcadorMandoAuxiliarPage(
+                                          canchaNombre: canchaNombre,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              children: [
+                                Container(
+                                  color: Colors.white,
+                                  padding: const EdgeInsets.all(16),
+                                  child: Wrap(
+                                    spacing: 12,
+                                    runSpacing: 12,
+                                    children: _generarBloquesHorarios(
+                                      canchaNombre,
+                                      mapaReservas,
+                                      fechaIdStr,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  );
+                },
               ),
             ),
           ],
         ),
+      );
+    }
+
+    return Scaffold(
+      backgroundColor: const Color(0xFFF8FAFC),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          // 📱 Debajo de 700px el formulario de reserva y la grilla de canchas
+          // no entran lado a lado (era un Row fijo flex:2 / flex:3): se apilan
+          // en una columna con scroll. La grilla tiene adentro un Expanded +
+          // ListView, así que fuera del Row necesita una altura acotada para
+          // no romper con constraints verticales infinitas.
+          final bool esMovil = constraints.maxWidth < 700;
+
+          if (esMovil) {
+            return SingleChildScrollView(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  panelNuevaReserva(movil: true),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    height: 440,
+                    child: panelDisponibilidad(movil: true),
+                  ),
+                ],
+              ),
+            );
+          }
+
+          return Padding(
+            padding: const EdgeInsets.all(40.0),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(flex: 2, child: panelNuevaReserva(movil: false)),
+                const SizedBox(width: 40),
+                Expanded(flex: 3, child: panelDisponibilidad(movil: false)),
+              ],
+            ),
+          );
+        },
       ),
     );
   }

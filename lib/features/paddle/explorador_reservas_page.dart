@@ -118,8 +118,16 @@ class _ExploradorReservasPageState extends State<ExploradorReservasPage> {
 
   @override
   Widget build(BuildContext context) {
-    final String fechaIdStr =
-        "${_fechaFiltro.year}-${_fechaFiltro.month}-${_fechaFiltro.day}";
+    // 🚨 Antes esta pantalla traía TODA la colección 'reservas_canchas' sin
+    // ningún filtro (.snapshots() sobre la colección entera) y recién
+    // después filtraba por fecha en el cliente comparando el ID del
+    // documento como texto. Con meses de reservas acumuladas eso significa
+    // releer cada vez más documentos en cada apertura Y en cada escritura
+    // de CUALQUIER reserva de CUALQUIER día (el listener de toda la
+    // colección se dispara igual). Ahora el filtro de fecha ya elegido va
+    // contra Firestore como rango real sobre el campo 'fecha'.
+    final DateTime inicioDia = DateTime(_fechaFiltro.year, _fechaFiltro.month, _fechaFiltro.day);
+    final DateTime finDia = inicioDia.add(const Duration(days: 1));
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
@@ -218,7 +226,11 @@ class _ExploradorReservasPageState extends State<ExploradorReservasPage> {
             // LISTADO EN TIEMPO REAL
             Expanded(
               child: StreamBuilder<QuerySnapshot>(
-                stream: _firestore.collection('reservas_canchas').snapshots(),
+                stream: _firestore
+                    .collection('reservas_canchas')
+                    .where('fecha', isGreaterThanOrEqualTo: Timestamp.fromDate(inicioDia))
+                    .where('fecha', isLessThan: Timestamp.fromDate(finDia))
+                    .snapshots(),
                 builder: (context, snapshot) {
                   if (!snapshot.hasData) {
                     return const Center(child: CircularProgressIndicator());
@@ -226,20 +238,15 @@ class _ExploradorReservasPageState extends State<ExploradorReservasPage> {
 
                   final docsFiltrados = snapshot.data!.docs.where((doc) {
                     final data = doc.data() as Map<String, dynamic>;
-                    final String rId = doc.id;
                     final String estado = data['estadoReserva'] ?? 'Confirmada';
                     final String cancha = data['cancha'] ?? '';
 
-                    // 🚨 Sin el "_" de cierre, el día 1 (prefijo "2026-9-1")
-                    // también matcheaba los IDs de los días 10 a 19
-                    // ("2026-9-10_...", "2026-9-19_...").
-                    bool coincideFecha = rId.startsWith('${fechaIdStr}_');
                     bool coincideEstado =
                         _estadoFiltro == 'Todos' || estado == _estadoFiltro;
                     bool coincideCancha =
                         _canchaFiltro == 'Todas' || cancha == _canchaFiltro;
 
-                    return coincideFecha && coincideEstado && coincideCancha;
+                    return coincideEstado && coincideCancha;
                   }).toList();
 
                   if (docsFiltrados.isEmpty) {

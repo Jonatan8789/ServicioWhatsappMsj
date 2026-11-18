@@ -1,5 +1,18 @@
 {
   "projects": {
     "default": "oqua-235c1"
-  }
+  },
+  "targets": {
+    "oqua-235c1": {
+      "hosting": {
+        "app": [
+          "oqua-235c1"
+        ],
+        "sitio": [
+          "oqua-club-deportivo"
+        ]
+      }
+    }
+  },
+  "etags": {}
 }

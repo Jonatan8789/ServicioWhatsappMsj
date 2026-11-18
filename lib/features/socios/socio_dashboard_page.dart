@@ -1,15 +1,22 @@
-import 'dart:convert';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:uuid/uuid.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:http/http.dart' as http;
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:intl/intl.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../paddle/reserva_cancha_screen.dart';
+import '../paddle/partidos_abiertos_page.dart';
+import '../natatorio/socio_reserva_andarivel_page.dart';
+import '../gimnasio/socio_clases_gimnasio_page.dart';
+import '../gimnasio/mi_rutina_page.dart';
+import '../../shared/mercado_pago_dialog.dart';
 
 class SocioDashboardPage extends StatefulWidget {
   final String socioId;
@@ -25,16 +32,87 @@ class SocioDashboardPage extends StatefulWidget {
   State<SocioDashboardPage> createState() => _SocioDashboardPageState();
 }
 
-class _SocioDashboardPageState extends State<SocioDashboardPage> {
+class _SocioDashboardPageState extends State<SocioDashboardPage>
+    with SingleTickerProviderStateMixin {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseMessaging _fcm = FirebaseMessaging.instance;
   final FlutterLocalNotificationsPlugin _localNotifications =
       FlutterLocalNotificationsPlugin();
 
+  // 🔗 DEEP LINKS: antes tocar una notificación push sólo abría la app en
+  // la pestaña por defecto (Turnos) — ahora, según el dato 'ruta' que manda
+  // la Cloud Function (ver functions/notificaciones.js), salta directo a
+  // la pestaña correspondiente (Torneos, Turnos, etc.). Necesita un
+  // TabController explícito (antes era un DefaultTabController implícito)
+  // para poder llamar animateTo() desde fuera del árbol de widgets.
+  static const int _tabCount = 8;
+  late final TabController _tabController;
+
+  static const Map<String, int> _rutaATabIndex = {
+    'turnos': 0,
+    'reservas_canchas': 0,
+    'partido_abierto': 1,
+    'natatorio': 2,
+    'andarivel': 2,
+    'clases_gimnasio': 3,
+    'mi_rutina': 4,
+    'torneos': 5,
+    'mi_cuenta': 6,
+    'cuenta_corriente': 6,
+    'mi_carnet': 7,
+  };
+
+  void _irATabPorRuta(String? ruta) {
+    if (ruta == null) return;
+    final index = _rutaATabIndex[ruta];
+    if (index != null) _tabController.animateTo(index);
+  }
+
+  void _manejarAperturaPorNotificacion(RemoteMessage? message) {
+    if (message == null) return;
+    _irATabPorRuta(message.data['ruta']);
+  }
+
+  // 🔒 QR Dinámico anti-capturas: antes el carnet mostraba un QR estático
+  // con el DNI en texto plano — una captura de pantalla de ese QR servía
+  // para siempre, así que cualquiera podía compartir/reusar la foto del
+  // carnet de otro socio para entrar al gimnasio. Ahora el QR también lleva
+  // un token aleatorio que se renueva cada 25s y se valida contra Firestore
+  // al escanear (ver control_acceso_page.dart): una captura vieja deja de
+  // sernir pasados esos segundos.
+  static const Duration _rotacionQr = Duration(seconds: 25);
+  Timer? _qrRotationTimer;
+  String _qrTokenActual = '';
+
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: _tabCount, vsync: this);
     _inicializarNotificacionesPush();
+    _rotarTokenQr();
+    _qrRotationTimer = Timer.periodic(_rotacionQr, (_) => _rotarTokenQr());
+  }
+
+  @override
+  void dispose() {
+    _qrRotationTimer?.cancel();
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _rotarTokenQr() async {
+    final nuevoToken = const Uuid().v4();
+    final expira = DateTime.now().add(_rotacionQr + const Duration(seconds: 5));
+    try {
+      await _firestore.collection('socios').doc(widget.socioId).update({
+        'qrTokenActual': nuevoToken,
+        'qrTokenExpira': Timestamp.fromDate(expira),
+      });
+      if (mounted) setState(() => _qrTokenActual = nuevoToken);
+    } catch (_) {
+      // Si falla (sin conexión momentánea), el carnet sigue mostrando el
+      // último token válido hasta el próximo intento.
+    }
   }
 
   Future<void> _inicializarNotificacionesPush() async {
@@ -54,13 +132,30 @@ class _SocioDashboardPageState extends State<SocioDashboardPage> {
         _guardarTokenSocio(nuevoToken);
       });
 
+      // 🔗 App abierta en background y el socio toca la notificación.
+      FirebaseMessaging.onMessageOpenedApp.listen(
+        _manejarAperturaPorNotificacion,
+      );
+      // 🔗 App estaba totalmente cerrada y se abrió DESDE la notificación.
+      final mensajeInicial = await _fcm.getInitialMessage();
+      _manejarAperturaPorNotificacion(mensajeInicial);
+
       const AndroidInitializationSettings initializationSettingsAndroid =
           AndroidInitializationSettings('@mipmap/ic_launcher');
 
       const InitializationSettings initializationSettings =
           InitializationSettings(android: initializationSettingsAndroid);
 
-      await _localNotifications.initialize(initializationSettings);
+      await _localNotifications.initialize(
+        initializationSettings,
+        // 🔗 Notificación recibida con la app ABIERTA (foreground): la
+        // mostramos nosotros mismos vía flutter_local_notifications, así
+        // que el tap tampoco pasa por onMessageOpenedApp — hay que leer el
+        // 'payload' que le mandamos abajo con la misma ruta.
+        onDidReceiveNotificationResponse: (response) {
+          _irATabPorRuta(response.payload);
+        },
+      );
 
       FirebaseMessaging.onMessage.listen((RemoteMessage message) {
         RemoteNotification? notification = message.notification;
@@ -82,6 +177,7 @@ class _SocioDashboardPageState extends State<SocioDashboardPage> {
                 icon: '@mipmap/ic_launcher',
               ),
             ),
+            payload: message.data['ruta'],
           );
         }
       });
@@ -104,6 +200,7 @@ class _SocioDashboardPageState extends State<SocioDashboardPage> {
     );
 
     if (resultado != null && resultado.files.first.bytes != null) {
+      if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Subiendo comprobante...')));
@@ -131,22 +228,33 @@ class _SocioDashboardPageState extends State<SocioDashboardPage> {
         });
 
         // 📲 Aviso por WhatsApp a los Administradores
+        //
+        // 🚨 Antes apuntaba a '/send-whatsapp-admin', un endpoint que nunca
+        // existió en el bridge de WhatsApp (404 silencioso, atrapado por el
+        // catch vacío). Ahora pasa por la Cloud Function
+        // 'notificarWhatsappSocio' (tipo: 'notificar_admin'), que valida que
+        // quien llama es un socio real y manda SIEMPRE al teléfono de
+        // administrador configurado del lado del servidor — nunca a uno que
+        // mande el cliente.
         try {
-          await http.post(
-            Uri.parse(
-              'https://servicio-whatsapp-oqua.onrender.com/send-whatsapp-admin',
-            ),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'mensaje':
-                  '📑 *NUEVO COMPROBANTE ADJUNTO*\n'
-                  '• Reserva: $reservaId\n'
-                  '• Socio: ${widget.socioData['nombre']}\n'
-                  '• Estado: Comprobante Adjunto\n'
-                  '• Ver enlace: $downloadUrl',
-            }),
+          final callable = FirebaseFunctions.instance.httpsCallable(
+            'notificarWhatsappSocio',
           );
-        } catch (_) {}
+          final resp = await callable.call({
+            'tipo': 'notificar_admin',
+            'mensaje':
+                '📑 *NUEVO COMPROBANTE ADJUNTO*\n'
+                '• Reserva: $reservaId\n'
+                '• Socio: ${widget.socioData['nombre']}\n'
+                '• Estado: Comprobante Adjunto\n'
+                '• Ver enlace: $downloadUrl',
+          });
+          if (resp.data['success'] != true) {
+            debugPrint('⚠️ Aviso WhatsApp a admin no enviado: ${resp.data['error']}');
+          }
+        } catch (e) {
+          debugPrint('⚠️ Error al avisar por WhatsApp: $e');
+        }
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -358,6 +466,27 @@ class _SocioDashboardPageState extends State<SocioDashboardPage> {
               ],
             ),
           ),
+          if (saldo < 0) ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.indigo,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+                icon: const Icon(Icons.qr_code_2_rounded),
+                label: const Text('Pagar deuda con Mercado Pago'),
+                onPressed: () => mostrarDialogoCobroMercadoPago(
+                  context,
+                  concepto: 'Pago de cuota social',
+                  cloudFunction: 'crearCobroMercadoPagoSocio',
+                  parametrosExtra: const {'tipo': 'cuota'},
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 24),
 
           // LISTADO DE TURNOS Y RESERVAS PENDIENTES CON ADJUNTO
@@ -398,37 +527,94 @@ class _SocioDashboardPageState extends State<SocioDashboardPage> {
                   final String estado =
                       resData['estadoReserva'] ?? 'Confirmada';
                   final String? comprobanteUrl = resData['comprobanteUrl'];
+                  final bool pagadoConMP = resData['estadoPagoMP'] == 'Aprobado';
 
                   return Card(
                     margin: const EdgeInsets.only(bottom: 10),
-                    child: ListTile(
-                      title: Text(
-                        '${resData['cancha']} (${resData['horaInicio']}:00 hs)',
-                      ),
-                      subtitle: Text(
-                        'Estado: $estado • Monto: \$${resData['precio']} ARS',
-                      ),
-                      trailing: estado == 'Confirmada'
-                          ? const Icon(Icons.check_circle, color: Colors.green)
-                          : ElevatedButton.icon(
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFF0A3B43),
-                                foregroundColor: Colors.white,
-                              ),
-                              icon: Icon(
-                                comprobanteUrl != null
-                                    ? Icons.find_in_page
-                                    : Icons.upload_file,
-                                size: 16,
-                              ),
-                              label: Text(
-                                comprobanteUrl != null
-                                    ? 'Reemplazar'
-                                    : 'Adjuntar Pago',
-                              ),
-                              onPressed: () =>
-                                  _subirComprobanteTransferencia(resId),
+                    child: Column(
+                      children: [
+                        ListTile(
+                          title: Text(
+                            '${resData['cancha']} (${resData['horaInicio']}:00 hs)',
+                          ),
+                          subtitle: Text(
+                            'Estado: $estado • Monto: \$${resData['precio']} ARS',
+                          ),
+                          trailing: estado == 'Confirmada'
+                              ? const Icon(
+                                  Icons.check_circle,
+                                  color: Colors.green,
+                                )
+                              : ElevatedButton.icon(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFF0A3B43),
+                                    foregroundColor: Colors.white,
+                                  ),
+                                  icon: Icon(
+                                    comprobanteUrl != null
+                                        ? Icons.find_in_page
+                                        : Icons.upload_file,
+                                    size: 16,
+                                  ),
+                                  label: Text(
+                                    comprobanteUrl != null
+                                        ? 'Reemplazar'
+                                        : 'Adjuntar Pago',
+                                  ),
+                                  onPressed: () =>
+                                      _subirComprobanteTransferencia(resId),
+                                ),
+                        ),
+                        if (pagadoConMP)
+                          const Padding(
+                            padding: EdgeInsets.only(
+                              left: 16,
+                              right: 16,
+                              bottom: 10,
                             ),
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                '✅ Pagado con Mercado Pago',
+                                style: TextStyle(
+                                  color: Colors.green,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          )
+                        else
+                          Padding(
+                            padding: const EdgeInsets.only(
+                              left: 12,
+                              right: 12,
+                              bottom: 10,
+                            ),
+                            child: SizedBox(
+                              width: double.infinity,
+                              child: OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: Colors.indigo,
+                                ),
+                                icon: const Icon(
+                                  Icons.qr_code_2_rounded,
+                                  size: 16,
+                                ),
+                                label: const Text('Pagar con Mercado Pago'),
+                                onPressed: () => mostrarDialogoCobroMercadoPago(
+                                  context,
+                                  concepto: 'Alquiler de cancha',
+                                  cloudFunction: 'crearCobroMercadoPagoSocio',
+                                  parametrosExtra: {
+                                    'tipo': 'reserva_cancha',
+                                    'reservaId': resId,
+                                  },
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
                     ),
                   );
                 },
@@ -551,7 +737,7 @@ class _SocioDashboardPageState extends State<SocioDashboardPage> {
                       alpha: 0.1,
                     ),
                     backgroundImage: fotoUrl.isNotEmpty
-                        ? NetworkImage(fotoUrl)
+                        ? CachedNetworkImageProvider(fotoUrl)
                         : null,
                     child: fotoUrl.isEmpty
                         ? const Icon(
@@ -582,7 +768,13 @@ class _SocioDashboardPageState extends State<SocioDashboardPage> {
                     ),
                     child: dni.isNotEmpty
                         ? QrImageView(
-                            data: dni,
+                            // "dni::token": el token rota cada 25s (ver
+                            // _rotarTokenQr) y lo valida control_acceso_page
+                            // .dart — una captura de pantalla vieja de este
+                            // QR deja de servir pasado ese lapso.
+                            data: _qrTokenActual.isEmpty
+                                ? dni
+                                : '$dni::$_qrTokenActual',
                             version: QrVersions.auto,
                             size: 200,
                           )
@@ -731,41 +923,49 @@ class _SocioDashboardPageState extends State<SocioDashboardPage> {
 
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 4,
-      child: Scaffold(
-        backgroundColor: const Color(0xFFF8FAFC),
-        appBar: AppBar(
-          title: Text('Hola, ${widget.socioData['nombre'] ?? 'Socio'}'),
-          backgroundColor: const Color(0xFF0A3B43),
-          foregroundColor: Colors.white,
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.logout),
-              onPressed: () => FirebaseAuth.instance.signOut(),
-            ),
-          ],
-          bottom: const TabBar(
-            indicatorColor: Colors.tealAccent,
-            indicatorWeight: 3,
-            labelColor: Colors.tealAccent,
-            unselectedLabelColor: Colors.white60,
-            tabs: [
-              Tab(icon: Icon(Icons.calendar_today_rounded), text: 'Turnos'),
-              Tab(icon: Icon(Icons.emoji_events_rounded), text: 'Torneos'),
-              Tab(icon: Icon(Icons.receipt_long_rounded), text: 'Mi Cuenta'),
-              Tab(icon: Icon(Icons.qr_code_2_rounded), text: 'Mi Carnet'),
-            ],
+    return Scaffold(
+      backgroundColor: const Color(0xFFF8FAFC),
+      appBar: AppBar(
+        title: Text('Hola, ${widget.socioData['nombre'] ?? 'Socio'}'),
+        backgroundColor: const Color(0xFF0A3B43),
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: () => FirebaseAuth.instance.signOut(),
           ),
-        ),
-        body: TabBarView(
-          children: [
-            const ReservaCanchaScreen(),
-            _buildVistaTorneos(),
-            _buildVistaCuentaCorriente(),
-            _buildVistaCarnet(),
+        ],
+        bottom: TabBar(
+          controller: _tabController,
+          isScrollable: true,
+          indicatorColor: Colors.tealAccent,
+          indicatorWeight: 3,
+          labelColor: Colors.tealAccent,
+          unselectedLabelColor: Colors.white60,
+          tabs: const [
+            Tab(icon: Icon(Icons.calendar_today_rounded), text: 'Turnos'),
+            Tab(icon: Icon(Icons.groups_rounded), text: 'Partido Abierto'),
+            Tab(icon: Icon(Icons.pool_rounded), text: 'Natatorio'),
+            Tab(icon: Icon(Icons.fitness_center_rounded), text: 'Clases Gym'),
+            Tab(icon: Icon(Icons.assignment_rounded), text: 'Mi Rutina'),
+            Tab(icon: Icon(Icons.emoji_events_rounded), text: 'Torneos'),
+            Tab(icon: Icon(Icons.receipt_long_rounded), text: 'Mi Cuenta'),
+            Tab(icon: Icon(Icons.qr_code_2_rounded), text: 'Mi Carnet'),
           ],
         ),
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          const ReservaCanchaScreen(),
+          const PartidosAbiertosPage(),
+          const SocioReservaAndarivelPage(),
+          const SocioClasesGimnasioPage(),
+          const MiRutinaPage(),
+          _buildVistaTorneos(),
+          _buildVistaCuentaCorriente(),
+          _buildVistaCarnet(),
+        ],
       ),
     );
   }

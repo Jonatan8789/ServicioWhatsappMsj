@@ -19,6 +19,13 @@ class _SocioLoginPageState extends State<SocioLoginPage> {
 
   static const Color primaryColor = Color(0xFF0A3B43);
 
+  @override
+  void dispose() {
+    _dniController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
   // 🔑 INGRESO CON DNI / CONTRASEÑA
   Future<void> _ingresarSocioDNI() async {
     final dni = _dniController.text.trim();
@@ -42,6 +49,7 @@ class _SocioLoginPageState extends State<SocioLoginPage> {
 
       if (querySocio.docs.isEmpty) {
         setState(() => _cargando = false);
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('El DNI no figura en el padrón del club.'),
@@ -110,6 +118,7 @@ class _SocioLoginPageState extends State<SocioLoginPage> {
 
       if (querySocio.docs.isEmpty) {
         setState(() => _cargando = false);
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(

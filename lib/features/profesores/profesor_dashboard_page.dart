@@ -4,6 +4,9 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import '../../services/fichaje_profesor_service.dart';
 import '../auth/login_page.dart';
+import '../gimnasio/asignar_rutina_page.dart';
+import '../gimnasio/gestion_clases_gimnasio_page.dart';
+import '../../shared/connectivity_banner.dart';
 
 /// Portal móvil de autoservicio para profesores — antes no existía ningún
 /// login funcional para este rol (ver login_page.dart / main.dart): un
@@ -133,7 +136,7 @@ class _ProfesorDashboardPageState extends State<ProfesorDashboardPage> {
             icon: const Icon(Icons.logout),
             onPressed: () async {
               await FirebaseAuth.instance.signOut();
-              if (mounted) {
+              if (context.mounted) {
                 Navigator.pushAndRemoveUntil(
                   context,
                   MaterialPageRoute(builder: (_) => const LoginPage()),
@@ -144,12 +147,43 @@ class _ProfesorDashboardPageState extends State<ProfesorDashboardPage> {
           ),
         ],
       ),
-      body: SingleChildScrollView(
+      body: ConnectivityBanner(
+        child: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _buildTarjetaFichaje(),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.assignment_rounded),
+                    label: const Text('Asignar Rutina'),
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const AsignarRutinaPage(),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.fitness_center_rounded),
+                    label: const Text('Clases Gym'),
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const GestionClasesGimnasioPage(),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
             const SizedBox(height: 24),
             const Text(
               'Mi Horario',
@@ -165,6 +199,7 @@ class _ProfesorDashboardPageState extends State<ProfesorDashboardPage> {
             const SizedBox(height: 12),
             _buildMisHoras(),
           ],
+        ),
         ),
       ),
     );

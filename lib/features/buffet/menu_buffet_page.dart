@@ -117,7 +117,7 @@ class _MenuBuffetPageState extends State<MenuBuffetPage> {
 
                 await batch.commit();
 
-                if (mounted) {
+                if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text(

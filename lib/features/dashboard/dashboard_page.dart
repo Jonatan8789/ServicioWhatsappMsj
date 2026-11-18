@@ -6,6 +6,11 @@ import 'package:natatorio_app/features/admin/reportes_bi_page.dart';
 import 'package:natatorio_app/features/buffet/explorador_ventas_page.dart';
 import 'package:natatorio_app/features/inventario/inventario_general_page.dart';
 import 'package:natatorio_app/features/paddle/canchas_page.dart';
+import 'package:natatorio_app/features/natatorio/andariveles_page.dart';
+import 'package:natatorio_app/features/paddle/admin_partidos_abiertos_page.dart';
+import 'package:natatorio_app/features/gimnasio/gestion_clases_gimnasio_page.dart';
+import 'package:natatorio_app/features/gimnasio/asignar_rutina_page.dart';
+import 'package:natatorio_app/features/admin/sitio_web_page.dart';
 import 'package:natatorio_app/features/profesores/profesores_page.dart';
 import '../auth/auth_services.dart';
 import '../auth/login_page.dart';
@@ -35,6 +40,8 @@ import '../profesores/liquidacion_profesores_page.dart';
 import '../../theme/app_theme.dart';
 import '../inventario/explorador_movimientos_stock_page.dart';
 import '../asistencias/explorador_asistencias_page.dart';
+import '../admin/auditoria_page.dart';
+import '../admin/panel_riesgo_bajas_page.dart';
 
 // 🎾 NUEVA IMPORTACIÓN DEL EXPLORADOR DE RESERVAS
 import 'package:natatorio_app/features/paddle/explorador_reservas_page.dart';
@@ -67,7 +74,6 @@ class _DashboardPageState extends State<DashboardPage> {
 
   Widget _construirPanelInicio() {
     final DateTime ahora = DateTime.now();
-    final String fechaIdStr = "${ahora.year}-${ahora.month}-${ahora.day}";
     final int horaActual = ahora.hour;
 
     return Padding(
@@ -114,11 +120,21 @@ class _DashboardPageState extends State<DashboardPage> {
 
             Row(
               children: [
-                StreamBuilder<QuerySnapshot>(
-                  stream: _firestore.collection('socios').snapshots(),
+                // 💸 Antes las 4 tarjetas de abajo streameaban en vivo la
+                // colección ENTERA de socios/asistencias/reservas sólo para
+                // sacar un número — cualquier escritura a cualquier socio
+                // (un pago, un check-in) recargaba esa lectura completa acá
+                // Y en cualquier otra pantalla que tuviera el mismo listener
+                // abierto, todo el tiempo que este panel de Inicio quedara
+                // montado (que puede ser todo el día). Ahora son consultas
+                // puntuales (FutureBuilder, no StreamBuilder) que se piden
+                // una sola vez al entrar a "Inicio" — volver a entrar al
+                // menú refresca los números.
+                FutureBuilder<AggregateQuerySnapshot>(
+                  future: _firestore.collection('socios').count().get(),
                   builder: (context, snapshot) {
                     final String total = snapshot.hasData
-                        ? snapshot.data!.docs.length.toString()
+                        ? (snapshot.data!.count ?? 0).toString()
                         : '...';
                     return _buildMetricCard(
                       'Socios Registrados',
@@ -131,8 +147,8 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
                 const SizedBox(width: 16),
 
-                StreamBuilder<QuerySnapshot>(
-                  stream: _firestore.collection('socios').snapshots(),
+                FutureBuilder<QuerySnapshot>(
+                  future: _firestore.collection('socios').get(),
                   builder: (context, snapshot) {
                     String cuotasAlDia = '...';
                     if (snapshot.hasData) {
@@ -160,25 +176,20 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
                 const SizedBox(width: 16),
 
-                StreamBuilder<QuerySnapshot>(
-                  stream: _firestore
+                FutureBuilder<AggregateQuerySnapshot>(
+                  future: _firestore
                       .collection('asistencias_accesos')
-                      .snapshots(),
+                      .where(
+                        'fechaStr',
+                        isEqualTo:
+                            "${ahora.year}-${ahora.month.toString().padLeft(2, '0')}-${ahora.day.toString().padLeft(2, '0')}",
+                      )
+                      .count()
+                      .get(),
                   builder: (context, snapshot) {
-                    String presentismoHoy = '0';
-                    if (snapshot.hasData) {
-                      final hoyStr =
-                          "${ahora.year}-${ahora.month.toString().padLeft(2, '0')}-${ahora.day.toString().padLeft(2, '0')}";
-
-                      final accesosDeHoy = snapshot.data!.docs.where((doc) {
-                        final data = doc.data() as Map<String, dynamic>;
-                        final fechaReg = data['fechaStr'] ?? '';
-                        return fechaReg.startsWith(hoyStr);
-                      }).length;
-
-                      presentismoHoy = accesosDeHoy.toString();
-                    }
-
+                    final String presentismoHoy = snapshot.hasData
+                        ? (snapshot.data!.count ?? 0).toString()
+                        : '...';
                     return _buildMetricCard(
                       'Presentismo Hoy',
                       '$presentismoHoy ingresos',
@@ -190,18 +201,29 @@ class _DashboardPageState extends State<DashboardPage> {
                 ),
                 const SizedBox(width: 16),
 
-                StreamBuilder<QuerySnapshot>(
-                  stream: _firestore.collection('reservas_canchas').snapshots(),
+                FutureBuilder<AggregateQuerySnapshot>(
+                  future: _firestore
+                      .collection('reservas_canchas')
+                      .where(
+                        'fecha',
+                        isGreaterThanOrEqualTo: Timestamp.fromDate(
+                          DateTime(ahora.year, ahora.month, ahora.day),
+                        ),
+                      )
+                      .where(
+                        'fecha',
+                        isLessThan: Timestamp.fromDate(
+                          DateTime(ahora.year, ahora.month, ahora.day).add(const Duration(days: 1)),
+                        ),
+                      )
+                      .count()
+                      .get(),
                   builder: (context, snapshot) {
-                    String porcentaje = '0%';
+                    String porcentaje = '...';
                     if (snapshot.hasData) {
-                      final deHoy = snapshot.data!.docs
-                          .where((doc) => doc.id.startsWith(fechaIdStr))
-                          .length;
-                      if (deHoy > 0) {
-                        double calculo = (deHoy / 45) * 100;
-                        porcentaje = "${calculo.toStringAsFixed(0)}%";
-                      }
+                      final int deHoy = snapshot.data!.count ?? 0;
+                      double calculo = (deHoy / 45) * 100;
+                      porcentaje = "${calculo.toStringAsFixed(0)}%";
                     }
                     return _buildMetricCard(
                       'Ocupación Canchas',
@@ -299,8 +321,32 @@ class _DashboardPageState extends State<DashboardPage> {
                         ),
                         const SizedBox(height: 20),
                         StreamBuilder<QuerySnapshot>(
+                          // 🚨 Antes escuchaba TODA la colección
+                          // 'reservas_canchas' (la historia completa de
+                          // turnos, para siempre) sólo para filtrar en
+                          // memoria los del día de hoy — cada reserva nueva
+                          // de CUALQUIER día disparaba este listener y
+                          // re-sincronizaba todo el historial. Acotado al
+                          // día de hoy con el mismo campo 'fecha' que ya usa
+                          // el resto de las pantallas de pádel.
                           stream: _firestore
                               .collection('reservas_canchas')
+                              .where(
+                                'fecha',
+                                isGreaterThanOrEqualTo: Timestamp.fromDate(
+                                  DateTime(ahora.year, ahora.month, ahora.day),
+                                ),
+                              )
+                              .where(
+                                'fecha',
+                                isLessThan: Timestamp.fromDate(
+                                  DateTime(
+                                    ahora.year,
+                                    ahora.month,
+                                    ahora.day,
+                                  ).add(const Duration(days: 1)),
+                                ),
+                              )
                               .snapshots(),
                           builder: (context, snapshot) {
                             if (!snapshot.hasData) {
@@ -314,10 +360,8 @@ class _DashboardPageState extends State<DashboardPage> {
                                   (doc) => doc.data() as Map<String, dynamic>,
                                 )
                                 .where((r) {
-                                  final String rId = r['id'] ?? '';
                                   final int rInicio = r['horaInicio'] ?? 0;
-                                  return rId.startsWith(fechaIdStr) &&
-                                      rInicio >= horaActual;
+                                  return rInicio >= horaActual;
                                 })
                                 .toList();
 
@@ -702,7 +746,7 @@ class _DashboardPageState extends State<DashboardPage> {
                         final res = await AuthService()
                             .forzarSincronizacionRanking();
 
-                        if (context.mounted) {
+                        if (mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
                               content: Text(res['mensaje']),
@@ -1110,6 +1154,33 @@ class _DashboardPageState extends State<DashboardPage> {
                               ),
                             ),
                           ),
+                        _buildMenuSectionLabel('Gimnasio'),
+                        if (_coincideFiltro('Clases de Gimnasio'))
+                          _buildMenuItem(
+                            Icons.fitness_center_rounded,
+                            'Clases de Gimnasio',
+                            onTap: () => setState(
+                              () => _pantallaActual =
+                                  const GestionClasesGimnasioPage(),
+                            ),
+                          ),
+                        if (_coincideFiltro('Asignar Rutina'))
+                          _buildMenuItem(
+                            Icons.assignment_rounded,
+                            'Asignar Rutina',
+                            onTap: () => setState(
+                              () => _pantallaActual = const AsignarRutinaPage(),
+                            ),
+                          ),
+                        _buildMenuSectionLabel('Natatorio'),
+                        if (_coincideFiltro('Andariveles'))
+                          _buildMenuItem(
+                            Icons.pool_rounded,
+                            'Andariveles',
+                            onTap: () => setState(
+                              () => _pantallaActual = const AndarivelesPage(),
+                            ),
+                          ),
                         _buildMenuSectionLabel('Pádel'),
                         if (_coincideFiltro('Canchas & Turnos'))
                           _buildMenuItem(
@@ -1135,6 +1206,15 @@ class _DashboardPageState extends State<DashboardPage> {
                             'Torneos de Pádel',
                             onTap: () => setState(
                               () => _pantallaActual = _construirVistaTorneos(),
+                            ),
+                          ),
+                        if (_coincideFiltro('Partidos Abiertos'))
+                          _buildMenuItem(
+                            Icons.groups_rounded,
+                            'Partidos Abiertos',
+                            onTap: () => setState(
+                              () => _pantallaActual =
+                                  const AdminPartidosAbiertosPage(),
                             ),
                           ),
                         _buildMenuSectionLabel('Buffet & Ventas'),
@@ -1170,15 +1250,6 @@ class _DashboardPageState extends State<DashboardPage> {
                             'Menú del Buffet',
                             onTap: () => setState(
                               () => _pantallaActual = const MenuBuffetPage(),
-                            ),
-                          ),
-                        if (_coincideFiltro('Compras & Proveedores'))
-                          _buildMenuItem(
-                            Icons.local_shipping_rounded,
-                            'Compras & Proveedores',
-                            onTap: () => setState(
-                              () => _pantallaActual =
-                                  const ProveedoresComprasPage(),
                             ),
                           ),
                         if (_coincideFiltro('Monitor de Cocina'))
@@ -1237,6 +1308,23 @@ class _DashboardPageState extends State<DashboardPage> {
 
                         if (widget.rolUsuario == 'admin') ...[
                           _buildMenuSectionLabel('Administración'),
+                          if (_coincideFiltro('Sitio Web'))
+                            _buildMenuItem(
+                              Icons.language_rounded,
+                              'Sitio Web',
+                              onTap: () => setState(
+                                () => _pantallaActual = const SitioWebPage(),
+                              ),
+                            ),
+                          if (_coincideFiltro('Compras & Proveedores'))
+                            _buildMenuItem(
+                              Icons.local_shipping_rounded,
+                              'Compras & Proveedores',
+                              onTap: () => setState(
+                                () => _pantallaActual =
+                                    const ProveedoresComprasPage(),
+                              ),
+                            ),
                           if (_coincideFiltro('Liquidación Profesores') ||
                               _coincideFiltro('Liquidacion Profesores') ||
                               _coincideFiltro('Honorarios'))
@@ -1298,6 +1386,23 @@ class _DashboardPageState extends State<DashboardPage> {
                               'Usuarios',
                               onTap: () => setState(
                                 () => _pantallaActual = const UsuariosPage(),
+                              ),
+                            ),
+                          if (_coincideFiltro('Auditoría'))
+                            _buildMenuItem(
+                              Icons.fact_check_outlined,
+                              'Auditoría',
+                              onTap: () => setState(
+                                () => _pantallaActual = const AuditoriaPage(),
+                              ),
+                            ),
+                          if (_coincideFiltro('Riesgo de Bajas') ||
+                              _coincideFiltro('Churn'))
+                            _buildMenuItem(
+                              Icons.trending_down_rounded,
+                              'Riesgo de Bajas',
+                              onTap: () => setState(
+                                () => _pantallaActual = const PanelRiesgoBajasPage(),
                               ),
                             ),
                           if (_coincideFiltro('Configuración') ||
@@ -1375,7 +1480,7 @@ class _DashboardPageState extends State<DashboardPage> {
                   ),
                   onTap: () async {
                     await AuthService().cerrarSesion();
-                    if (context.mounted) {
+                    if (mounted) {
                       Navigator.pushReplacement(
                         context,
                         MaterialPageRoute(

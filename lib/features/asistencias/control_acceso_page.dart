@@ -3,8 +3,11 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../../services/fichaje_profesor_service.dart';
 import '../../theme/app_theme.dart';
+import '../socios/socio_model.dart';
+import '../../shared/connectivity_banner.dart';
 
 class ControlAccesoPage extends StatefulWidget {
   final String rolUsuario;
@@ -31,6 +34,17 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
   String? _socioIdEncontrado;
   bool _buscando = false;
 
+  // 🔎 Buscador por nombre — no todos los socios tienen DNI cargado (ver
+  // socio_model.dart, el campo cae a '' si falta), y hasta ahora las 3
+  // únicas vías de acceso (teclado, QR, huella) resuelven exclusivamente
+  // por DNI: un socio sin DNI no tenía forma de entrar. Se carga la nómina
+  // una sola vez (no en vivo) y se filtra en memoria, mismo patrón de
+  // costo ya aplicado esta sesión en POS/Canchas.
+  List<QueryDocumentSnapshot> _todosLosSociosBusqueda = [];
+  bool _cargandoSociosBusqueda = true;
+  bool _mostrarBusquedaNombre = false;
+  String _busquedaNombre = '';
+
   // Estados de autorización
   bool _cuotaAlDia = false;
   bool _aptoMedicoVigente = false;
@@ -49,10 +63,22 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
   void initState() {
     super.initState();
     _ultimaHuellaProcesada = null;
+    _cargarSociosParaBusqueda();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _conectarLectorBiometricoFirestore();
       _lectorFocusNode.requestFocus();
     });
+  }
+
+  Future<void> _cargarSociosParaBusqueda() async {
+    setState(() => _cargandoSociosBusqueda = true);
+    final snap = await _firestore.collection('socios').get();
+    if (mounted) {
+      setState(() {
+        _todosLosSociosBusqueda = snap.docs;
+        _cargandoSociosBusqueda = false;
+      });
+    }
   }
 
   @override
@@ -119,9 +145,25 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
 
   // 🔍 PROCESAMIENTO DEL DNI / ESCÁNER MANUAL
   Future<void> _procesarEntradaLector(String query) async {
-    final String codigoLeido = query.trim();
-    if (codigoLeido.isEmpty) return;
+    final String crudo = query.trim();
+    if (crudo.isEmpty) return;
     setState(() => _buscando = true);
+
+    // 🔒 QR Dinámico anti-capturas: el carnet del socio codifica
+    // "dni::token" (ver socio_dashboard_page.dart), tanto para la cámara
+    // como para un eventual lector USB tipo teclado apuntando a la pantalla
+    // del celular — ambos caminos llegan acá con el mismo string crudo. Si
+    // alguien tipea el DNI a mano (sin "::"), se sigue aceptando tal cual,
+    // sin exigir token: la verificación visual del staff reemplaza al QR.
+    String codigoLeido = crudo;
+    String? tokenEscaneado;
+    if (crudo.contains('::')) {
+      final partes = crudo.split('::');
+      codigoLeido = partes[0];
+      tokenEscaneado = partes.length > 1 && partes[1].isNotEmpty
+          ? partes[1]
+          : null;
+    }
 
     try {
       // 1. Detección de Profesores por DNI
@@ -155,107 +197,153 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
 
       if (snapSocio.docs.isNotEmpty) {
         final doc = snapSocio.docs.first;
-        final data = doc.data();
-        final String socioId = doc.id;
-
-        final hoy = DateTime.now();
-        final periodoActualStr =
-            "${hoy.year}-${hoy.month.toString().padLeft(2, '0')}";
-
-        final String? cubiertoHasta = data['mesesCubiertosHasta']?.toString();
-        bool promoVigente = false;
-        if (cubiertoHasta != null &&
-            cubiertoHasta.compareTo(periodoActualStr) >= 0) {
-          promoVigente = true;
-        }
-
-        final double saldo = (data['saldoCuentaCorriente'] ?? 0.0).toDouble();
-        bool cuota = saldo >= 0 || promoVigente;
-        bool matricula = data['matriculaAlDia'] == true;
-
-        bool apto = false;
-        if (data['vencimientoAptoMedico'] != null) {
-          DateTime vencApto = (data['vencimientoAptoMedico'] as Timestamp)
-              .toDate();
-          apto = vencApto.isAfter(hoy);
-        }
-
-        final String frecuenciaRaw = (data['frecuencia'] ?? 'Pase Libre')
-            .toString()
-            .toLowerCase();
-        int limite = 999;
-
-        if (frecuenciaRaw.contains('1') || frecuenciaRaw.contains('una')) {
-          limite = 4;
-        } else if (frecuenciaRaw.contains('2') ||
-            frecuenciaRaw.contains('dos')) {
-          limite = 8;
-        } else if (frecuenciaRaw.contains('3') ||
-            frecuenciaRaw.contains('tres')) {
-          limite = 12;
-        } else if (frecuenciaRaw.contains('4') ||
-            frecuenciaRaw.contains('cuatro')) {
-          limite = 16;
-        } else if (frecuenciaRaw.contains('libre')) {
-          limite = 999;
-        }
-
-        final docCreditoRef = _firestore
-            .collection('socios')
-            .doc(socioId)
-            .collection('creditos_mensuales')
-            .doc(periodoActualStr);
-
-        final docCredito = await docCreditoRef.get();
-        int usadas = 0;
-
-        if (!docCredito.exists) {
-          await docCreditoRef.set({
-            'periodo': periodoActualStr,
-            'clasesUsadas': 0,
-            'limiteClases': limite,
-            'fechaInicio': DateTime.now(),
-          });
-        } else {
-          final creditoData = docCredito.data();
-          usadas = (creditoData?['clasesUsadas'] as num?)?.toInt() ?? 0;
-          // 🚨 Respeta clases extra acreditadas manualmente ("Acreditar Clases
-          // Extra" en la ficha del socio): ese diálogo incrementa
-          // 'limiteClases' sobre este mismo documento, pero antes de este fix
-          // nunca se leía de vuelta, así que el crédito no tenía ningún efecto
-          // en el acceso.
-          final int? limiteAlmacenado = (creditoData?['limiteClases'] as num?)
-              ?.toInt();
-          if (limiteAlmacenado != null && limite != 999) {
-            limite = limiteAlmacenado;
-          }
-        }
-
-        int restantes = limite == 999 ? 999 : (limite - usadas);
-        bool tieneCredito = limite == 999 || restantes > 0;
-        bool accesoPermitido = cuota && apto && tieneCredito;
-
-        setState(() {
-          _socioIdEncontrado = socioId;
-          _socioEncontrado = data;
-          _saldoCuentaCorriente = saldo;
-          _cuotaAlDia = cuota;
-          _matriculaAlDia = matricula;
-          _aptoMedicoVigente = apto;
-          _frecuenciaPase = data['frecuencia'] ?? 'Pase Libre';
-          _limiteClasesMes = limite;
-          _clasesUsadasMes = usadas;
-          _creditosRestantes = restantes;
-          _tieneCreditoDisponible = tieneCredito;
-          _estadoHabilitado = accesoPermitido;
-        });
+        await _procesarSocioEncontrado(
+          doc.id,
+          doc.data(),
+          tokenEscaneado: tokenEscaneado,
+        );
       }
     } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Error al procesar lectura: $e')));
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error al procesar lectura: $e')));
+      }
     } finally {
-      setState(() => _buscando = false);
+      if (mounted) setState(() => _buscando = false);
+    }
+  }
+
+  // 🔎 Lógica de validación de un socio ya identificado (por DNI, QR, huella
+  // o ahora también por selección manual en el buscador de nombre) — antes
+  // vivía inline dentro de _procesarEntradaLector, acoplada a la búsqueda
+  // por DNI; se extrajo para poder reusarla desde el buscador por nombre.
+  Future<void> _procesarSocioEncontrado(
+    String socioId,
+    Map<String, dynamic> data, {
+    String? tokenEscaneado,
+  }) async {
+    setState(() => _buscando = true);
+    try {
+      // 🔒 QR Dinámico anti-capturas: sólo se exige cuando vino de un QR
+      // escaneado (tokenEscaneado != null) — la búsqueda manual por nombre o
+      // DNI tipeado no pasa por acá con token, así que no se ve afectada.
+      if (tokenEscaneado != null) {
+        if (!qrTokenValido(data, tokenEscaneado)) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                  '⚠️ QR vencido o inválido. Pedile al socio que vuelva a abrir su carnet.',
+                ),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
+          return;
+        }
+      }
+
+      final hoy = DateTime.now();
+      final periodoActualStr =
+          "${hoy.year}-${hoy.month.toString().padLeft(2, '0')}";
+
+      final String? cubiertoHasta = data['mesesCubiertosHasta']?.toString();
+      bool promoVigente = false;
+      if (cubiertoHasta != null &&
+          cubiertoHasta.compareTo(periodoActualStr) >= 0) {
+        promoVigente = true;
+      }
+
+      final double saldo = (data['saldoCuentaCorriente'] ?? 0.0).toDouble();
+      bool cuota = saldo >= 0 || promoVigente;
+      bool matricula = data['matriculaAlDia'] == true;
+
+      bool apto = false;
+      if (data['vencimientoAptoMedico'] != null) {
+        DateTime vencApto = (data['vencimientoAptoMedico'] as Timestamp)
+            .toDate();
+        apto = vencimientoVigente(vencApto, hoy);
+      }
+
+      final String frecuenciaRaw = (data['frecuencia'] ?? 'Pase Libre')
+          .toString()
+          .toLowerCase();
+      int limite = 999;
+
+      if (frecuenciaRaw.contains('1') || frecuenciaRaw.contains('una')) {
+        limite = 4;
+      } else if (frecuenciaRaw.contains('2') ||
+          frecuenciaRaw.contains('dos')) {
+        limite = 8;
+      } else if (frecuenciaRaw.contains('3') ||
+          frecuenciaRaw.contains('tres')) {
+        limite = 12;
+      } else if (frecuenciaRaw.contains('4') ||
+          frecuenciaRaw.contains('cuatro')) {
+        limite = 16;
+      } else if (frecuenciaRaw.contains('libre')) {
+        limite = 999;
+      }
+
+      final docCreditoRef = _firestore
+          .collection('socios')
+          .doc(socioId)
+          .collection('creditos_mensuales')
+          .doc(periodoActualStr);
+
+      final docCredito = await docCreditoRef.get();
+      int usadas = 0;
+
+      if (!docCredito.exists) {
+        await docCreditoRef.set({
+          'periodo': periodoActualStr,
+          'clasesUsadas': 0,
+          'limiteClases': limite,
+          'fechaInicio': DateTime.now(),
+        });
+      } else {
+        final creditoData = docCredito.data();
+        usadas = (creditoData?['clasesUsadas'] as num?)?.toInt() ?? 0;
+        // 🚨 Respeta clases extra acreditadas manualmente ("Acreditar Clases
+        // Extra" en la ficha del socio): ese diálogo incrementa
+        // 'limiteClases' sobre este mismo documento, pero antes de este fix
+        // nunca se leía de vuelta, así que el crédito no tenía ningún efecto
+        // en el acceso.
+        final int? limiteAlmacenado = (creditoData?['limiteClases'] as num?)
+            ?.toInt();
+        if (limiteAlmacenado != null && limite != 999) {
+          limite = limiteAlmacenado;
+        }
+      }
+
+      int restantes = limite == 999 ? 999 : (limite - usadas);
+      bool tieneCredito = limite == 999 || restantes > 0;
+      bool accesoPermitido = cuota && apto && tieneCredito;
+
+      setState(() {
+        _socioIdEncontrado = socioId;
+        _socioEncontrado = data;
+        _saldoCuentaCorriente = saldo;
+        _cuotaAlDia = cuota;
+        _matriculaAlDia = matricula;
+        _aptoMedicoVigente = apto;
+        _frecuenciaPase = data['frecuencia'] ?? 'Pase Libre';
+        _limiteClasesMes = limite;
+        _clasesUsadasMes = usadas;
+        _creditosRestantes = restantes;
+        _tieneCreditoDisponible = tieneCredito;
+        _estadoHabilitado = accesoPermitido;
+        _mostrarBusquedaNombre = false;
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error al procesar lectura: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _buscando = false);
     }
   }
 
@@ -493,18 +581,17 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
                             "✅ Plantilla guardada en $coleccionTarget/$entidadIdEncontrada",
                           );
 
-                          if (mounted) {
-                            Navigator.pop(dialogCtx);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text(
-                                  '✅ Huella vinculada con éxito mediante motor biométrico nativo.',
-                                ),
-                                backgroundColor: Colors.green,
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                '✅ Huella vinculada con éxito mediante motor biométrico nativo.',
                               ),
-                            );
-                            _busquedaController.clear();
-                          }
+                              backgroundColor: Colors.green,
+                            ),
+                          );
+                          _busquedaController.clear();
+                          if (dialogCtx.mounted) Navigator.pop(dialogCtx);
                         } catch (e) {
                           debugPrint(
                             "🔴 Error al guardar huella en Firestore: $e",
@@ -592,6 +679,7 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
                     .get();
 
                 if (snap.docs.isEmpty) {
+                  if (!context.mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('No se encontró el DNI.')),
                   );
@@ -605,17 +693,16 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
                   'fechaReseteoHuellas': DateTime.now(),
                 });
 
-                if (mounted) {
-                  Navigator.pop(ctx);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(
-                        '🧹 Huellas reseteadas para ${snap.docs.first.data()['nombre']}.',
-                      ),
-                      backgroundColor: Colors.red,
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      '🧹 Huellas reseteadas para ${snap.docs.first.data()['nombre']}.',
                     ),
-                  );
-                }
+                    backgroundColor: Colors.red,
+                  ),
+                );
+                if (ctx.mounted) Navigator.pop(ctx);
               },
               child: const Text('Resetear Huellas'),
             ),
@@ -747,6 +834,7 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
       'operador': widget.rolUsuario,
     });
 
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('✅ Ingreso asentado para ${_socioEncontrado!['nombre']}'),
@@ -825,7 +913,8 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
           ),
         ],
       ),
-      body: KeyboardListener(
+      body: ConnectivityBanner(
+        child: KeyboardListener(
         focusNode: _lectorFocusNode,
         onKeyEvent: (event) {
           if (!_lectorFocusNode.hasFocus) {
@@ -852,6 +941,8 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     _buildTarjetaLector(),
+                    const SizedBox(height: 12),
+                    _buildBuscadorPorNombre(),
                     const SizedBox(height: 16),
                     _socioEncontrado == null
                         ? _buildEstadoInicialLector()
@@ -876,6 +967,8 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
                     child: Column(
                       children: [
                         _buildTarjetaLector(),
+                        const SizedBox(height: 12),
+                        _buildBuscadorPorNombre(),
                         const SizedBox(height: 20),
                         Expanded(
                           child: _socioEncontrado == null
@@ -891,6 +984,7 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
               ),
             );
           },
+        ),
         ),
       ),
     );
@@ -984,6 +1078,115 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
             ),
           ],
         ],
+      ),
+    );
+  }
+
+  // 🔎 Buscador por nombre — pensado para socios sin DNI cargado, que no
+  // pueden entrar por ninguna de las 3 vías normales (teclado/QR/huella,
+  // todas resuelven por DNI).
+  Widget _buildBuscadorPorNombre() {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(AppRadius.lg),
+            onTap: () => setState(() => _mostrarBusquedaNombre = !_mostrarBusquedaNombre),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(
+                children: [
+                  const Icon(Icons.person_search_rounded, color: AppColors.textMuted, size: 20),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      'Buscar por nombre (socios sin DNI cargado)',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  Icon(
+                    _mostrarBusquedaNombre ? Icons.expand_less_rounded : Icons.expand_more_rounded,
+                    color: AppColors.textMuted,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_mostrarBusquedaNombre)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Divider(height: 1),
+                  const SizedBox(height: 12),
+                  TextField(
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      hintText: 'Escribí nombre o apellido…',
+                      prefixIcon: Icon(Icons.search_rounded, size: 20),
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
+                    onChanged: (v) => setState(() => _busquedaNombre = v.trim().toLowerCase()),
+                  ),
+                  const SizedBox(height: 8),
+                  if (_cargandoSociosBusqueda)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                    )
+                  else if (_busquedaNombre.length >= 2)
+                    _buildResultadosBusquedaNombre(),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildResultadosBusquedaNombre() {
+    final resultados = _todosLosSociosBusqueda.where((doc) {
+      final data = doc.data() as Map<String, dynamic>;
+      final nombre = (data['nombre'] ?? '').toString().toLowerCase();
+      return nombre.contains(_busquedaNombre);
+    }).take(8).toList();
+
+    if (resultados.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 8),
+        child: Text('Sin coincidencias.', style: TextStyle(color: AppColors.textMuted, fontSize: 13)),
+      );
+    }
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxHeight: 220),
+      child: ListView.separated(
+        shrinkWrap: true,
+        itemCount: resultados.length,
+        separatorBuilder: (_, __) => const Divider(height: 1),
+        itemBuilder: (context, i) {
+          final doc = resultados[i];
+          final data = doc.data() as Map<String, dynamic>;
+          final String dni = (data['dni'] ?? '').toString();
+          return ListTile(
+            dense: true,
+            leading: const Icon(Icons.person_rounded, color: AppColors.teal),
+            title: Text(data['nombre'] ?? 'Socio sin nombre'),
+            subtitle: Text(dni.isEmpty ? 'Sin DNI cargado' : 'DNI: $dni'),
+            onTap: () {
+              _busquedaController.clear();
+              _procesarSocioEncontrado(doc.id, data);
+            },
+          );
+        },
       ),
     );
   }
@@ -1087,35 +1290,34 @@ class _ControlAccesoPageState extends State<ControlAccesoPage> {
                 child: SizedBox(
                   width: 90,
                   height: 90,
+                  // 💸 Caché en disco (cached_network_image): el kiosco de
+                  // acceso vuelve a mostrar la misma foto del mismo socio en
+                  // cada ingreso — sin caché, Image.network la volvía a
+                  // descargar de Storage cada vez.
                   child: fotoUrl.isNotEmpty
-                      ? Image.network(
-                          fotoUrl,
+                      ? CachedNetworkImage(
+                          imageUrl: fotoUrl,
                           fit: BoxFit.cover,
-                          loadingBuilder: (context, child, progress) {
-                            if (progress == null) return child;
-                            return Container(
-                              color: AppColors.surfaceMuted,
-                              child: const Center(
-                                child: SizedBox(
-                                  width: 22,
-                                  height: 22,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
+                          placeholder: (context, url) => Container(
+                            color: AppColors.surfaceMuted,
+                            child: const Center(
+                              child: SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
                                 ),
                               ),
-                            );
-                          },
-                          errorBuilder: (context, error, stackTrace) {
-                            return Container(
-                              color: Colors.teal.shade200,
-                              child: const Icon(
-                                Icons.person,
-                                size: 45,
-                                color: Colors.white,
-                              ),
-                            );
-                          },
+                            ),
+                          ),
+                          errorWidget: (context, url, error) => Container(
+                            color: Colors.teal.shade200,
+                            child: const Icon(
+                              Icons.person,
+                              size: 45,
+                              color: Colors.white,
+                            ),
+                          ),
                         )
                       : Container(
                           color: Colors.teal.shade200,

@@ -22,6 +22,13 @@ class _LoginPageState extends State<LoginPage> {
   String _modoActual = 'login';
   bool _cargando = false;
 
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
   void _mostrarMensaje(
     String mensaje,
     Color color, [
