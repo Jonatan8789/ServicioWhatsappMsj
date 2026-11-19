@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'item_pro_shop_venta.dart';
 
 class ReservaCanchaModel {
   final String id;
@@ -17,6 +18,10 @@ class ReservaCanchaModel {
   // de seña nunca los veía.
   final double senaAbonada;
   final String detalleSena;
+  // 🎾 Paletas/pelotas vendidas junto con esta reserva (Pro-Shop real,
+  // conectado al stock de inventario_general) — antes era un cargo fijo por
+  // hora sin relación con ningún stock.
+  final List<ItemProShopVenta> itemsProShop;
 
   ReservaCanchaModel({
     required this.id,
@@ -31,6 +36,7 @@ class ReservaCanchaModel {
     this.estadoReserva = 'Confirmada',
     this.senaAbonada = 0.0,
     this.detalleSena = '',
+    this.itemsProShop = const [],
   });
 
   Map<String, dynamic> toFirestore() {
@@ -44,8 +50,9 @@ class ReservaCanchaModel {
       'precio': precio,
       'metodoPago': metodoPago,
       'estadoReserva': estadoReserva,
-      'seña_abonada': senaAbonada,
-      'detalle_seña': detalleSena,
+      'senaAbonada': senaAbonada,
+      'detalleSena': detalleSena,
+      'itemsProShop': itemsProShop.map((i) => i.toMap()).toList(),
     };
   }
 
@@ -64,8 +71,22 @@ class ReservaCanchaModel {
       precio: (data['precio'] as num?)?.toDouble() ?? 0.0,
       metodoPago: data['metodoPago']?.toString() ?? 'Efectivo',
       estadoReserva: data['estadoReserva']?.toString() ?? 'Confirmada',
-      senaAbonada: (data['seña_abonada'] as num?)?.toDouble() ?? 0.0,
-      detalleSena: data['detalle_seña']?.toString() ?? '',
+      // 🔁 Fallback a las claves viejas con ñ (seña_abonada/detalle_seña):
+      // documentos creados antes de esta migración todavía las tienen, y
+      // canchas_page.dart necesita seguir mostrando esa seña ya cargada.
+      senaAbonada:
+          (data['senaAbonada'] as num?)?.toDouble() ??
+          (data['seña_abonada'] as num?)?.toDouble() ??
+          0.0,
+      detalleSena:
+          data['detalleSena']?.toString() ??
+          data['detalle_seña']?.toString() ??
+          '',
+      itemsProShop:
+          (data['itemsProShop'] as List<dynamic>?)
+              ?.map((m) => ItemProShopVenta.fromMap(m as Map<String, dynamic>))
+              .toList() ??
+          const [],
     );
   }
 }

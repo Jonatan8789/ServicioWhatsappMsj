@@ -87,6 +87,11 @@ service cloud.firestore {
           // campos sensibles — sólo permiten identificarse a SÍ MISMO con
           // un QR que vence rápido, nunca a otro socio.
           'qrTokenActual', 'qrTokenExpira',
+          // 🎾 Perfil de jugador de pádel (Fase 6): categoría y posición
+          // preferida, de bajo riesgo (no financiero, no de acceso) — el
+          // propio socio las carga antes de crear/unirse a un Partido
+          // Abierto (ver crear_partido_abierto_page.dart).
+          'categoriaPadel', 'posicionPadel',
         ]);
     }
     // Subcolecciones del socio (cuenta_corriente, etc.): datos financieros y
@@ -110,6 +115,9 @@ service cloud.firestore {
     match /configuracion/{document=**} { allow read: if estaAutenticado(); allow write: if esAdmin(); }
     match /configuracion_paddle/{document=**} { allow read: if estaAutenticado(); allow write: if esAdmin(); }
     match /configuraciones_paddle/{document=**} { allow read: if estaAutenticado(); allow write: if esAdmin(); }
+    // 🎾 Canchas dinámicas (una por cancha): reemplaza la lista plana vieja
+    // de configuracion_paddle/canchas, ver cancha_padel_model.dart.
+    match /canchas_padel/{canchaId} { allow read: if estaAutenticado(); allow write: if esAdmin(); }
     match /configuracion_natatorio/{document=**} { allow read: if estaAutenticado(); allow write: if esAdmin(); }
     match /configuraciones_fiscales/{document=**} { allow read: if esAdmin(); allow write: if esAdmin(); }
     match /terminales_caja/{document=**} { allow read: if estaAutenticado(); allow write: if esAdmin(); }
@@ -137,6 +145,13 @@ service cloud.firestore {
     // tocar cuál turno. El cliente sólo necesita leerlos (para mostrar "tu
     // turno fijo" o la lista de abonos en el panel de staff).
     match /turnos_recurrentes_canchas/{turnoId} {
+      allow read: if estaAutenticado();
+      allow write: if false;
+    }
+    // 🔁 Clases recurrentes de pádel — mismo criterio que arriba: sólo se
+    // crean/cancelan vía Cloud Functions
+    // (crearTurnoRecurrenteClasePadelStaff/cancelarTurnoRecurrenteClasePadel).
+    match /turnos_recurrentes_clases_padel/{turnoId} {
       allow read: if estaAutenticado();
       allow write: if false;
     }
@@ -208,6 +223,58 @@ service cloud.firestore {
         request.resource.data.jugadoresIds[0:resource.data.jugadoresIds.size()] == resource.data.jugadoresIds &&
         request.resource.data.jugadoresNombres.size() == request.resource.data.jugadoresIds.size() &&
         get(/databases/$(database)/documents/socios/$(request.resource.data.jugadoresIds[resource.data.jugadoresIds.size()])).data.usuarioUid == request.auth.uid;
+    }
+    // 🎾 CLASES DE PÁDEL: cupo + lista de espera FIFO y cobro por alumno,
+    // ver clase_padel_repository.dart.
+    match /clases_padel/{claseId} {
+      allow read: if estaAutenticado();
+      allow create: if esStaffOperativo();
+      // Autoservicio (inscribirse/cancelar): sólo toca las listas de cupo y
+      // espera — mismo criterio de riesgo ya aceptado en clases_gimnasio
+      // (no valida que cada socio sólo toque su propia entrada dentro del
+      // array; lo garantiza la transacción de la app, y no es dato
+      // financiero ni de acceso).
+      allow update: if estaAutenticado() &&
+        soloModifica([
+          'inscriptosIds', 'inscriptosNombres',
+          'listaEsperaIds', 'listaEsperaNombres',
+        ]);
+      allow delete: if esStaffOperativo();
+    }
+    // 💳 Pago de UN alumno por UNA ocurrencia de clase — la auditoría de
+    // pagos de clases. ⚠️ Esta regla de 'create'/'delete' (el autoservicio
+    // de inscribirseAClasePadelAtomica/cancelarInscripcionClasePadelAtomica
+    // corriendo para el propio socio) no se probó contra un emulador real
+    // de Firestore, mismo aviso que 'partidos_abiertos' más arriba — un
+    // socio sólo puede crear/borrar SU PROPIO pago, nunca uno ajeno ni uno
+    // ya marcado como pagado.
+    match /pagos_clases_padel/{pagoId} {
+      allow read: if esStaffOperativo() ||
+        (estaAutenticado() &&
+          get(/databases/$(database)/documents/socios/$(resource.data.socioId)).data.usuarioUid == request.auth.uid);
+      allow create: if esStaffOperativo() ||
+        (estaAutenticado() &&
+          request.resource.data.cobrado == false &&
+          request.resource.data.estadoPagoMP == 'Pendiente' &&
+          get(/databases/$(database)/documents/socios/$(request.resource.data.socioId)).data.usuarioUid == request.auth.uid);
+      // 🚨 Sólo staff puede marcar un pago como cobrado/aprobado — ni el
+      // propio socio ni nadie más puede pisar esos campos desde el cliente
+      // (el webhook de Mercado Pago, Fase 4, usa Admin SDK y no pasa por
+      // estas reglas).
+      allow update: if esStaffOperativo();
+      allow delete: if esStaffOperativo() ||
+        (estaAutenticado() &&
+          resource.data.cobrado == false &&
+          resource.data.estadoPagoMP != 'Aprobado' &&
+          get(/databases/$(database)/documents/socios/$(resource.data.socioId)).data.usuarioUid == request.auth.uid);
+    }
+    // 🖥️ MARCADOR EN VIVO (TV + mando auxiliar), ver padel_score_engine.dart.
+    // Antes no tenía regla propia y caía en el fallback admin-only de más
+    // abajo, así que un cajero no podía cargar puntos desde el mando aunque
+    // sí puede operar caja/reservas — el marcador es tan operativo como eso.
+    match /partidos_marcador/{canchaId} {
+      allow read: if estaAutenticado();
+      allow write: if esStaffOperativo();
     }
     match /torneos/{document=**} { allow read: if estaAutenticado(); allow write: if esAdmin(); }
     match /torneos/{torneoId}/parejas_inscriptas/{inscripcionId} { allow read, write: if estaAutenticado(); }

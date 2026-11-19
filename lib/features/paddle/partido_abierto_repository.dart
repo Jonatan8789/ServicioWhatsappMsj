@@ -37,12 +37,25 @@ class PartidoNoDisponibleException implements Exception {
 /// cuenta corriente desde el cliente (las reglas de Firestore sólo permiten
 /// eso al staff) — en su lugar se genera una 'venta_pendiente', el mismo
 /// mecanismo que ya usa el autoservicio de reservas, para que caja la cobre.
+/// 🚨 `ventaSocioId` es el valor que se guarda en `ventas_pendientes.socio_id`
+/// — campo cuya regla de Firestore exige que sea exactamente
+/// `request.auth.uid` de quien escribe (mismo truco que ya usa
+/// `reserva_cancha_screen.dart`), MIENTRAS QUE `organizadorId` tiene que ser
+/// el id real del doc `socios/{id}` (distinto del auth.uid en cuentas
+/// migradas) para que la regla de creación de `partidos_abiertos`
+/// (`get(socios/$(creadoPor)).usuarioUid == request.auth.uid`) resuelva
+/// bien. Antes `crear_partido_abierto_page.dart` pasaba el auth.uid en
+/// ambos lugares a la vez — funcionaba de pura casualidad sólo si el id del
+/// doc del socio coincidía con su auth.uid, y fallaba (permission-denied al
+/// crear el partido) para cualquier socio migrado con un id de alta
+/// distinto.
 Future<PartidoAbiertoModel> crearPartidoAbiertoAtomica({
   required FirebaseFirestore firestore,
   required ReservaCanchaModel reserva,
   required String categoria,
   required String organizadorId,
   required String organizadorNombre,
+  required String ventaSocioId,
 }) async {
   await reservarCanchaAtomica(firestore: firestore, reserva: reserva);
 
@@ -67,9 +80,9 @@ Future<PartidoAbiertoModel> crearPartidoAbiertoAtomica({
 
   await _crearVentaPendiente(
     firestore: firestore,
-    jugadorId: organizadorId,
     jugadorNombre: organizadorNombre,
     partido: partido,
+    ventaSocioId: ventaSocioId,
   );
 
   return partido;
@@ -83,6 +96,7 @@ Future<PartidoAbiertoModel> unirseAPartidoAtomica({
   required String partidoId,
   required String jugadorId,
   required String jugadorNombre,
+  required String ventaSocioId,
 }) async {
   final partidoRef = firestore.collection('partidos_abiertos').doc(partidoId);
 
@@ -132,9 +146,9 @@ Future<PartidoAbiertoModel> unirseAPartidoAtomica({
 
   await _crearVentaPendiente(
     firestore: firestore,
-    jugadorId: jugadorId,
     jugadorNombre: jugadorNombre,
     partido: partidoActualizado,
+    ventaSocioId: ventaSocioId,
   );
 
   return partidoActualizado;
@@ -142,12 +156,12 @@ Future<PartidoAbiertoModel> unirseAPartidoAtomica({
 
 Future<void> _crearVentaPendiente({
   required FirebaseFirestore firestore,
-  required String jugadorId,
   required String jugadorNombre,
   required PartidoAbiertoModel partido,
+  required String ventaSocioId,
 }) {
   return firestore.collection('ventas_pendientes').add({
-    'socio_id': jugadorId,
+    'socio_id': ventaSocioId,
     'nombre_socio': jugadorNombre,
     'origen':
         'Partido Abierto - ${partido.cancha} (${partido.horaInicio}:00 hs)',

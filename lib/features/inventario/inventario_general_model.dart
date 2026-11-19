@@ -1,5 +1,14 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+/// 🚨 Valor real que guarda `inventario_general_page.dart` (el ABM de
+/// Inventario Central) para la categoría de Pro-Shop — el selector de tipo
+/// de esa pantalla sólo ofrece 'Buffet', 'Pro-Shop / Indumentaria',
+/// 'Insumos / Mantenimiento' y 'Artículos de Alquiler', nunca un
+/// 'Pro-Shop' a secas. Las pantallas de pádel que venden paletas/pelotas
+/// (canchas_page.dart, reserva_cancha_screen.dart) tienen que filtrar por
+/// este mismo valor para encontrar los productos reales cargados ahí.
+const String tipoInventarioProShop = 'Pro-Shop / Indumentaria';
+
 class ComponenteComboGeneral {
   final String itemInventarioId;
   final int cantidad;
@@ -34,7 +43,7 @@ class InventarioGeneralModel {
   final String descripcion;
   final String categoria; // Ej: Gaseosas, Paletas, Remeras, Limpieza
   final String
-  tipoInventario; // Ej: 'Buffet', 'Pro-Shop', 'Insumos / Mantenimiento'
+  tipoInventario; // 'Buffet' | tipoInventarioProShop | 'Insumos / Mantenimiento' | 'Artículos de Alquiler'
   final String
   ubicacion; // Ej: 'Depósito Central', 'Barra Buffet', 'Mostrador Recepción'
   final double precioVenta; // PVP al público (0 si es de uso interno)

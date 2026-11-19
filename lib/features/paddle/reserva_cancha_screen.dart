@@ -2,6 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import '../inventario/inventario_general_model.dart';
+import 'cancha_padel_model.dart';
+import 'cancha_padel_repository.dart';
+import 'item_pro_shop_venta.dart';
+import 'paddle_ids.dart';
 import 'reserva_cancha_model.dart';
 import 'reserva_cancha_repository.dart';
 
@@ -20,21 +25,75 @@ class _ReservaCanchaScreenState extends State<ReservaCanchaScreen> {
   int? _horaInicioSeleccionada;
   int _duracionHoras = 1;
 
-  bool _alquilaPaleta = false;
-  bool _alquilaPelotas = false;
   bool _cargando = false;
 
   double _precioBaseSocio = 4500.0;
-  double _precioPaletaAnexo = 1500.0;
-  double _precioPelotasAnexo = 1000.0;
   int _horaInicioCargaLuz = 20;
   double _plusLuzAnexo = 1500.0;
   int _horaApertura = 8;
   int _horaCierre = 23;
 
   List<String> _canchasActivas = [];
+  List<CanchaPadelModel> _canchasPadel = [];
   Map<String, dynamic>? _datosSocio;
   String? _socioDocId;
+
+  CanchaPadelModel? _canchaPadelDe(String nombre) {
+    for (final c in _canchasPadel) {
+      if (c.nombre == nombre) return c;
+    }
+    return null;
+  }
+
+  double _precioHoraParaCancha(String cancha, int hora) {
+    final c = _canchaPadelDe(cancha);
+    final base = c?.precioBaseHoraSocio ?? _precioBaseSocio;
+    final horaLuz = c?.horaInicioLuz ?? _horaInicioCargaLuz;
+    final plusLuz = c?.precioAdicionalLuz ?? _plusLuzAnexo;
+    return hora >= horaLuz ? base + plusLuz : base;
+  }
+
+  // 🛍️ Pro-Shop real (conectado a inventario_general, tipoInventario
+  // tipoInventarioProShop). Antes acá ni siquiera había un checkbox para
+  // paleta/pelotas (los campos _alquilaPaleta/_alquilaPelotas existían
+  // pero nunca se mostraban ni se podían tildar).
+  List<InventarioGeneralModel> _productosProShop = [];
+  final Map<String, int> _cantidadesProShop = {};
+
+  List<ItemProShopVenta> get _itemsProShopSeleccionados {
+    final items = <ItemProShopVenta>[];
+    for (final producto in _productosProShop) {
+      final cantidad = _cantidadesProShop[producto.id] ?? 0;
+      if (cantidad > 0) {
+        items.add(
+          ItemProShopVenta(
+            productoId: producto.id,
+            nombre: producto.nombre,
+            cantidad: cantidad,
+            precioUnitario: producto.precioVenta,
+          ),
+        );
+      }
+    }
+    return items;
+  }
+
+  double get _totalProShopSeleccionado =>
+      _itemsProShopSeleccionados.fold(0.0, (acc, i) => acc + i.subtotal);
+
+  Future<void> _cargarProductosProShop() async {
+    final snap = await _firestore
+        .collection('inventario_general')
+        .where('tipoInventario', isEqualTo: tipoInventarioProShop)
+        .where('disponible', isEqualTo: true)
+        .get();
+    if (!mounted) return;
+    setState(() {
+      _productosProShop = snap.docs
+          .map(InventarioGeneralModel.fromFirestore)
+          .toList();
+    });
+  }
 
   // 🚨 Antes el stream se armaba de nuevo (nueva instancia de Stream) en
   // CADA build(), incluyendo los que dispara elegir una cancha u horario —
@@ -49,6 +108,7 @@ class _ReservaCanchaScreenState extends State<ReservaCanchaScreen> {
     super.initState();
     _reservasDelDiaStream = _streamReservasDelDia(_fechaSeleccionada);
     _cargarAjustesGlobales();
+    _cargarProductosProShop();
   }
 
   Stream<QuerySnapshot> _streamReservasDelDia(DateTime fecha) {
@@ -96,10 +156,6 @@ class _ReservaCanchaScreenState extends State<ReservaCanchaScreen> {
         final d = docAjustes.data()!;
         _precioBaseSocio =
             (d['precio_base_cancha'] as num?)?.toDouble() ?? 4500.0;
-        _precioPaletaAnexo =
-            (d['precio_alquiler_paleta'] as num?)?.toDouble() ?? 1500.0;
-        _precioPelotasAnexo =
-            (d['precio_alquiler_pelotas'] as num?)?.toDouble() ?? 1000.0;
         _horaInicioCargaLuz = (d['hora_inicio_luz'] as num?)?.toInt() ?? 20;
         _plusLuzAnexo =
             (d['precio_adicional_luz'] as num?)?.toDouble() ?? 1500.0;
@@ -107,19 +163,11 @@ class _ReservaCanchaScreenState extends State<ReservaCanchaScreen> {
         _horaCierre = (d['hora_cierre'] as num?)?.toInt() ?? 23;
       }
 
-      final docCanchas = await _firestore
-          .collection('configuracion_paddle')
-          .doc('canchas')
-          .get();
-      if (docCanchas.exists && docCanchas.data()?['lista'] != null) {
-        _canchasActivas = List<String>.from(docCanchas.data()!['lista']);
-      } else {
-        _canchasActivas = [
-          "Cancha 1 Cristal",
-          "Cancha 2 Cristal",
-          "Cancha 3 Muro",
-        ];
-      }
+      // 🎾 Canchas dinámicas (canchas_padel, Fase 1): antes esta pantalla
+      // leía la misma lista plana legacy que canchas_page.dart, así que una
+      // cancha nueva cargada desde el ABM nunca aparecía acá.
+      _canchasPadel = await obtenerCanchasPadel(_firestore);
+      _canchasActivas = await obtenerNombresCanchasActivas(_firestore);
 
       if (_canchasActivas.isNotEmpty) {
         _canchaSeleccionada = _canchasActivas.first;
@@ -132,19 +180,18 @@ class _ReservaCanchaScreenState extends State<ReservaCanchaScreen> {
   }
 
   double get totalCalculado {
-    if (_horaInicioSeleccionada == null) return 0.0;
+    if (_horaInicioSeleccionada == null || _canchaSeleccionada == null) {
+      return 0.0;
+    }
     double total = 0.0;
     for (
       int h = _horaInicioSeleccionada!;
       h < _horaInicioSeleccionada! + _duracionHoras;
       h++
     ) {
-      total += _precioBaseSocio;
-      if (h >= _horaInicioCargaLuz) total += _plusLuzAnexo;
-      if (_alquilaPaleta) total += _precioPaletaAnexo;
-      if (_alquilaPelotas) total += _precioPelotasAnexo;
+      total += _precioHoraParaCancha(_canchaSeleccionada!, h);
     }
-    return total;
+    return total + _totalProShopSeleccionado;
   }
 
   Future<void> _confirmarReserva() async {
@@ -162,11 +209,12 @@ class _ReservaCanchaScreenState extends State<ReservaCanchaScreen> {
 
     setState(() => _cargando = true);
 
-    final fechaIdStr =
-        "${_fechaSeleccionada.year}-${_fechaSeleccionada.month}-${_fechaSeleccionada.day}";
-    final canchaLimpia = _canchaSeleccionada!.replaceAll(' ', '');
-    final reservaId =
-        "${fechaIdStr}_${canchaLimpia}_${_horaInicioSeleccionada}hs_duracion${_duracionHoras}h";
+    final reservaId = idReservaCancha(
+      fecha: _fechaSeleccionada,
+      cancha: _canchaSeleccionada!,
+      horaInicio: _horaInicioSeleccionada!,
+      duracionHoras: _duracionHoras,
+    );
 
     final String nombreSocio = _datosSocio != null
         ? '${_datosSocio!['nombre'] ?? ''} ${_datosSocio!['apellido'] ?? ''}'
@@ -183,6 +231,7 @@ class _ReservaCanchaScreenState extends State<ReservaCanchaScreen> {
       duracionHoras: _duracionHoras,
       precio: totalCalculado,
       metodoPago: 'Cuenta Corriente',
+      itemsProShop: _itemsProShopSeleccionados,
     );
 
     try {
@@ -196,9 +245,16 @@ class _ReservaCanchaScreenState extends State<ReservaCanchaScreen> {
       } on HorarioOcupadoException {
         _snack('¡El horario ya fue reservado!', Colors.red);
         return;
+      } on StockInsuficienteException catch (e) {
+        _snack('$e', Colors.red);
+        return;
       }
 
       if (FirebaseAuth.instance.currentUser != null) {
+        // 🚨 'es_producto_fisico': false en los ítems de Pro-Shop a
+        // propósito: el stock ya se descontó atómicamente al crear la
+        // reserva (reservarCanchaAtomica); si acá fuera 'true', caja lo
+        // volvería a descontar al cobrar esta venta pendiente.
         await _firestore.collection('ventas_pendientes').add({
           'socio_id': FirebaseAuth.instance.currentUser!.uid,
           'nombre_socio': nombreSocio,
@@ -211,10 +267,18 @@ class _ReservaCanchaScreenState extends State<ReservaCanchaScreen> {
               'id': 'servicio_cancha_paddle',
               'nombre':
                   'Alquiler $_canchaSeleccionada ($_horaInicioSeleccionada:00 hs)',
-              'precio': totalCalculado,
+              'precio': totalCalculado - _totalProShopSeleccionado,
               'cantidad': 1,
               'es_producto_fisico': false,
             },
+            for (final item in _itemsProShopSeleccionados)
+              {
+                'id': item.productoId,
+                'nombre': '${item.nombre} (x${item.cantidad})',
+                'precio': item.subtotal,
+                'cantidad': item.cantidad,
+                'es_producto_fisico': false,
+              },
           ],
         });
       }
@@ -232,7 +296,10 @@ class _ReservaCanchaScreenState extends State<ReservaCanchaScreen> {
       }
 
       _snack('¡Reserva confirmada!', Colors.green);
-      setState(() => _horaInicioSeleccionada = null);
+      setState(() {
+        _horaInicioSeleccionada = null;
+        _cantidadesProShop.clear();
+      });
     } catch (e) {
       _snack('Error al reservar: $e', Colors.red);
     } finally {
@@ -436,8 +503,7 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
 
   @override
   Widget build(BuildContext context) {
-    final fechaIdStr =
-        "${_fechaSeleccionada.year}-${_fechaSeleccionada.month}-${_fechaSeleccionada.day}";
+    final fechaIdStr = fechaIdStrCancha(_fechaSeleccionada);
 
     return Scaffold(
       appBar: AppBar(
@@ -538,8 +604,7 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
                           bool ocupado = false;
 
                           mapaReservas.forEach((id, r) {
-                            final fId =
-                                "${r.fecha.year}-${r.fecha.month}-${r.fecha.day}";
+                            final fId = fechaIdStrCancha(r.fecha);
                             if (fId == fechaIdStr &&
                                 r.cancha == _canchaSeleccionada) {
                               if (hora >= r.horaInicio &&
@@ -603,6 +668,61 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
                     },
                   ),
                 ),
+                if (_productosProShop.isNotEmpty)
+                  Container(
+                    color: Colors.white,
+                    child: ExpansionTile(
+                      title: Text(
+                        _itemsProShopSeleccionados.isEmpty
+                            ? 'Pro-Shop (paletas, pelotas) — opcional'
+                            : 'Pro-Shop: +\$${_totalProShopSeleccionado.toStringAsFixed(0)}',
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                      children: _productosProShop.map((producto) {
+                        final cantidad = _cantidadesProShop[producto.id] ?? 0;
+                        final sinStock = producto.stockActual <= 0;
+                        return ListTile(
+                          dense: true,
+                          title: Text(
+                            '${producto.nombre} (\$${producto.precioVenta.toStringAsFixed(0)} c/u)',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: sinStock ? Colors.grey : Colors.black87,
+                            ),
+                          ),
+                          subtitle: Text('Stock: ${producto.stockActual}'),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.remove_circle_outline),
+                                onPressed: cantidad > 0
+                                    ? () => setState(
+                                        () => _cantidadesProShop[producto
+                                                .id] =
+                                            cantidad - 1,
+                                      )
+                                    : null,
+                              ),
+                              Text('$cantidad'),
+                              IconButton(
+                                icon: const Icon(Icons.add_circle_outline),
+                                onPressed:
+                                    (!sinStock &&
+                                        cantidad < producto.stockActual)
+                                    ? () => setState(
+                                        () => _cantidadesProShop[producto
+                                                .id] =
+                                            cantidad + 1,
+                                      )
+                                    : null,
+                              ),
+                            ],
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ),
                 Container(
                   padding: const EdgeInsets.all(16),
                   color: Colors.white,

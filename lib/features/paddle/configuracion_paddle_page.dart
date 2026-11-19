@@ -1,5 +1,84 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'cancha_padel_model.dart';
+import 'cancha_padel_repository.dart';
+import 'paddle_ids.dart';
+
+const List<String> _tiposSuperficie = ['Cristal', 'Muro', 'Panorámica'];
+
+/// Fila editable del ABM de canchas. No usa TextEditingController (serían
+/// decenas por fila dinámica a crear/destruir) — cada TextFormField usa
+/// `initialValue` + `onChanged` para mutar esta fila directamente.
+class _FilaCanchaPadel {
+  String idOriginal; // '' si todavía no se guardó nunca.
+  String nombre;
+  String tipoSuperficie;
+  bool activa;
+  bool permiteTurnosFijos;
+  String precioSocioTxt;
+  String precioExternoTxt;
+  String precioLuzTxt;
+  String horaLuzTxt;
+  int ordenVisualizacion;
+
+  _FilaCanchaPadel({
+    required this.idOriginal,
+    required this.nombre,
+    required this.tipoSuperficie,
+    required this.activa,
+    required this.permiteTurnosFijos,
+    required this.precioSocioTxt,
+    required this.precioExternoTxt,
+    required this.precioLuzTxt,
+    required this.horaLuzTxt,
+    required this.ordenVisualizacion,
+  });
+
+  factory _FilaCanchaPadel.desdeModelo(CanchaPadelModel c) {
+    return _FilaCanchaPadel(
+      idOriginal: c.id,
+      nombre: c.nombre,
+      tipoSuperficie: c.tipoSuperficie,
+      activa: c.activa,
+      permiteTurnosFijos: c.permiteTurnosFijos,
+      precioSocioTxt: c.precioBaseHoraSocio?.toStringAsFixed(0) ?? '',
+      precioExternoTxt: c.precioBaseHoraExterno?.toStringAsFixed(0) ?? '',
+      precioLuzTxt: c.precioAdicionalLuz?.toStringAsFixed(0) ?? '',
+      horaLuzTxt: c.horaInicioLuz?.toString() ?? '',
+      ordenVisualizacion: c.ordenVisualizacion,
+    );
+  }
+
+  factory _FilaCanchaPadel.nueva(int orden) {
+    return _FilaCanchaPadel(
+      idOriginal: '',
+      nombre: '',
+      tipoSuperficie: 'Cristal',
+      activa: true,
+      permiteTurnosFijos: true,
+      precioSocioTxt: '',
+      precioExternoTxt: '',
+      precioLuzTxt: '',
+      horaLuzTxt: '',
+      ordenVisualizacion: orden,
+    );
+  }
+
+  CanchaPadelModel aModelo() {
+    return CanchaPadelModel(
+      id: canchaSinEspacios(nombre),
+      nombre: nombre,
+      tipoSuperficie: tipoSuperficie,
+      activa: activa,
+      permiteTurnosFijos: permiteTurnosFijos,
+      precioBaseHoraSocio: double.tryParse(precioSocioTxt.trim()),
+      precioBaseHoraExterno: double.tryParse(precioExternoTxt.trim()),
+      precioAdicionalLuz: double.tryParse(precioLuzTxt.trim()),
+      horaInicioLuz: int.tryParse(horaLuzTxt.trim()),
+      ordenVisualizacion: ordenVisualizacion,
+    );
+  }
+}
 
 class ConfiguracionPaddlePage extends StatefulWidget {
   const ConfiguracionPaddlePage({super.key});
@@ -13,142 +92,166 @@ class _ConfiguracionPaddlePageState extends State<ConfiguracionPaddlePage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final _formKey = GlobalKey<FormState>();
 
-  // Controladores de texto para los valores de referencia del Club
-  final _precioBaseCtrl = TextEditingController();
+  // Ajustes globales (fallback para cualquier cancha sin override propio).
+  final _precioBaseSocioCtrl = TextEditingController();
+  final _precioBaseExternoCtrl = TextEditingController();
   final _precioLuzCtrl = TextEditingController();
   final _horaLuzCtrl = TextEditingController();
-  final _precioPaletaCtrl = TextEditingController();
-
-  // Controlador para dar de alta nuevas canchas
-  final _nuevaCanchaCtrl = TextEditingController();
+  final _horaAperturaCtrl = TextEditingController();
+  final _horaCierreCtrl = TextEditingController();
 
   bool _cargandoDatos = true;
   bool _guardando = false;
-  List<String> _canchasExistentes = [];
+  bool _migrando = false;
+  List<_FilaCanchaPadel> _filas = [];
 
   @override
   void initState() {
     super.initState();
-    _cargarAjustesYCcanchas();
+    _cargarTodo();
   }
 
   @override
   void dispose() {
-    _precioBaseCtrl.dispose();
+    _precioBaseSocioCtrl.dispose();
+    _precioBaseExternoCtrl.dispose();
     _precioLuzCtrl.dispose();
     _horaLuzCtrl.dispose();
-    _precioPaletaCtrl.dispose();
-    _nuevaCanchaCtrl.dispose();
+    _horaAperturaCtrl.dispose();
+    _horaCierreCtrl.dispose();
     super.dispose();
   }
 
-  /// Recupera tanto la matriz de precios como el listado estructural de canchas
-  Future<void> _cargarAjustesYCcanchas() async {
+  Future<void> _cargarTodo() async {
+    setState(() => _cargandoDatos = true);
     try {
-      // 1. Cargar Tarifas Globales
       final docAjustes = await _firestore
           .collection('configuraciones_paddle')
           .doc('ajustes_globales')
           .get();
-      if (docAjustes.exists && docAjustes.data() != null) {
-        final datos = docAjustes.data()!;
-        _precioBaseCtrl.text = (datos['precio_base_cancha'] ?? '0').toString();
-        _precioLuzCtrl.text = (datos['precio_adicional_luz'] ?? '0').toString();
-        _horaLuzCtrl.text = (datos['hora_inicio_luz'] ?? '20').toString();
-        _precioPaletaCtrl.text = (datos['precio_alquiler_paleta'] ?? '0')
-            .toString();
-      } else {
-        _precioBaseCtrl.text = "4000";
-        _precioLuzCtrl.text = "1500";
-        _horaLuzCtrl.text = "20";
-        _precioPaletaCtrl.text = "800";
-      }
+      final datos = docAjustes.data() ?? {};
+      _precioBaseSocioCtrl.text = (datos['precio_base_cancha'] ?? 4500)
+          .toString();
+      _precioBaseExternoCtrl.text = (datos['precio_base_externo'] ?? 6000)
+          .toString();
+      _precioLuzCtrl.text = (datos['precio_adicional_luz'] ?? 1500)
+          .toString();
+      _horaLuzCtrl.text = (datos['hora_inicio_luz'] ?? 20).toString();
+      _horaAperturaCtrl.text = (datos['hora_apertura'] ?? 8).toString();
+      _horaCierreCtrl.text = (datos['hora_cierre'] ?? 23).toString();
 
-      // 2. Cargar Listado de Canchas Fisicas
-      final docCanchas = await _firestore
-          .collection('configuracion_paddle')
-          .doc('canchas')
-          .get();
-      if (docCanchas.exists && docCanchas.data()?['lista'] != null) {
-        setState(() {
-          _canchasExistentes = List<String>.from(docCanchas.data()!['lista']);
-        });
-      } else {
-        setState(() {
-          _canchasExistentes = [
-            "Cancha 1 Cristal",
-            "Cancha 2 Cristal",
-            "Cancha 3 Muro",
-          ];
-        });
-      }
+      final canchas = await obtenerCanchasPadel(_firestore);
+      _filas = canchas.map(_FilaCanchaPadel.desdeModelo).toList();
     } catch (e) {
       _mostrarSnack('❌ Error al recuperar configuraciones: $e', Colors.red);
     } finally {
-      setState(() => _cargandoDatos = false);
+      if (mounted) setState(() => _cargandoDatos = false);
     }
   }
 
-  /// Guarda de forma síncrona tarifas y el listado de canchas para la grilla
   Future<void> _guardarTodo() async {
     if (!_formKey.currentState!.validate()) return;
+    for (final fila in _filas) {
+      if (fila.nombre.trim().isEmpty) {
+        _mostrarSnack(
+          '⚠️ Hay una cancha sin nombre — completalo o eliminala.',
+          Colors.orange,
+        );
+        return;
+      }
+    }
 
     setState(() => _guardando = true);
     try {
-      // Guardar tarifas y reglas nocturnas
       await _firestore
           .collection('configuraciones_paddle')
           .doc('ajustes_globales')
           .set({
             'precio_base_cancha':
-                double.tryParse(_precioBaseCtrl.text.trim()) ?? 0.0,
+                double.tryParse(_precioBaseSocioCtrl.text.trim()) ?? 0.0,
+            'precio_base_externo':
+                double.tryParse(_precioBaseExternoCtrl.text.trim()) ?? 0.0,
             'precio_adicional_luz':
                 double.tryParse(_precioLuzCtrl.text.trim()) ?? 0.0,
             'hora_inicio_luz': int.tryParse(_horaLuzCtrl.text.trim()) ?? 20,
-            'precio_alquiler_paleta':
-                double.tryParse(_precioPaletaCtrl.text.trim()) ?? 0.0,
+            'hora_apertura': int.tryParse(_horaAperturaCtrl.text.trim()) ?? 8,
+            'hora_cierre': int.tryParse(_horaCierreCtrl.text.trim()) ?? 23,
             'ultimaModificacion': DateTime.now(),
           }, SetOptions(merge: true));
 
-      // Guardar el ABM estructural de canchas
-      await _firestore.collection('configuracion_paddle').doc('canchas').set({
-        'lista': _canchasExistentes,
-      });
+      for (final fila in _filas) {
+        final nuevoId = canchaSinEspacios(fila.nombre);
+        if (fila.idOriginal.isNotEmpty && fila.idOriginal != nuevoId) {
+          await eliminarCanchaPadel(_firestore, fila.idOriginal);
+        }
+        await guardarCanchaPadel(_firestore, fila.aModelo());
+        fila.idOriginal = nuevoId;
+      }
 
+      _mostrarSnack('✅ Configuración de pádel actualizada.', Colors.green);
+    } catch (e) {
+      _mostrarSnack('❌ Error al guardar: $e', Colors.red);
+    } finally {
+      if (mounted) setState(() => _guardando = false);
+    }
+  }
+
+  Future<void> _migrarCanchasLegacy() async {
+    setState(() => _migrando = true);
+    try {
+      final migradas = await migrarCanchasLegacyACanchasPadel(_firestore);
+      final canchas = await obtenerCanchasPadel(_firestore);
+      setState(() => _filas = canchas.map(_FilaCanchaPadel.desdeModelo).toList());
       _mostrarSnack(
-        '✅ Configuración y ABM de canchas actualizados en el servidor.',
+        migradas > 0
+            ? '✅ Se migraron $migradas cancha/s desde la configuración anterior.'
+            : 'No había canchas nuevas para migrar (ya estaban todas acá, o no hay ninguna configurada todavía).',
         Colors.green,
       );
     } catch (e) {
-      _mostrarSnack('❌ Error al escribir cambios: $e', Colors.red);
+      _mostrarSnack('❌ Error al migrar: $e', Colors.red);
     } finally {
-      setState(() => _guardando = false);
+      if (mounted) setState(() => _migrando = false);
     }
   }
 
-  void _agregarCanchaALista() {
-    final nombre = _nuevaCanchaCtrl.text.trim();
-    if (nombre.isEmpty) return;
-    if (_canchasExistentes.contains(nombre)) {
-      _mostrarSnack(
-        '⚠️ Esa cancha ya se encuentra dada de alta.',
-        Colors.orange,
-      );
-      return;
-    }
+  void _agregarCancha() {
     setState(() {
-      _canchasExistentes.add(nombre);
-      _nuevaCanchaCtrl.clear();
+      _filas.add(_FilaCanchaPadel.nueva(_filas.length));
     });
   }
 
-  void _removerCanchaDeLista(String nombre) {
-    setState(() {
-      _canchasExistentes.remove(nombre);
-    });
+  Future<void> _eliminarCancha(_FilaCanchaPadel fila) async {
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('¿Eliminar cancha?'),
+        content: Text(
+          'Se va a eliminar "${fila.nombre}" de la configuración. Esto no '
+          'borra las reservas ya hechas en esa cancha.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmar != true) return;
+
+    if (fila.idOriginal.isNotEmpty) {
+      await eliminarCanchaPadel(_firestore, fila.idOriginal);
+    }
+    setState(() => _filas.remove(fila));
   }
 
   void _mostrarSnack(String msg, Color c) {
+    if (!mounted) return;
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(msg), backgroundColor: c));
@@ -172,7 +275,7 @@ class _ConfiguracionPaddlePageState extends State<ConfiguracionPaddlePage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'Administración Comercial: Paddle',
+                'Administración Comercial: Pádel',
                 style: TextStyle(
                   fontSize: 32,
                   fontWeight: FontWeight.w900,
@@ -180,7 +283,9 @@ class _ConfiguracionPaddlePageState extends State<ConfiguracionPaddlePage> {
                 ),
               ),
               const Text(
-                'Centralizá las tarifas por bloque, horarios de reflectores y control de canchas activas.',
+                'Precios de referencia del complejo y precio/horario propios '
+                'por cancha (si una cancha no tiene su propio valor cargado, '
+                'usa el de referencia).',
                 style: TextStyle(color: Colors.grey),
               ),
               const SizedBox(height: 32),
@@ -188,7 +293,7 @@ class _ConfiguracionPaddlePageState extends State<ConfiguracionPaddlePage> {
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // BLOQUE Izquierdo: Tarifas e Iluminación
+                  // BLOQUE Izquierdo: Ajustes globales de referencia.
                   Expanded(
                     child: Container(
                       padding: const EdgeInsets.all(32),
@@ -201,24 +306,45 @@ class _ConfiguracionPaddlePageState extends State<ConfiguracionPaddlePage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const Text(
-                            'Matriz de Precios y Horarios',
+                            'Precios y Horarios de Referencia',
                             style: TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
                           const SizedBox(height: 24),
-                          TextFormField(
-                            controller: _precioBaseCtrl,
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
-                              labelText: 'Precio Base del Turno (Cancha)',
-                              border: OutlineInputBorder(),
-                              prefixText: '\$ ',
-                            ),
-                            validator: (v) => v == null || v.isEmpty
-                                ? 'Campo requerido'
-                                : null,
+                          Row(
+                            children: [
+                              Expanded(
+                                child: TextFormField(
+                                  controller: _precioBaseSocioCtrl,
+                                  keyboardType: TextInputType.number,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Precio base (Socio)',
+                                    border: OutlineInputBorder(),
+                                    prefixText: '\$ ',
+                                  ),
+                                  validator: (v) => v == null || v.isEmpty
+                                      ? 'Campo requerido'
+                                      : null,
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: TextFormField(
+                                  controller: _precioBaseExternoCtrl,
+                                  keyboardType: TextInputType.number,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Precio base (Externo)',
+                                    border: OutlineInputBorder(),
+                                    prefixText: '\$ ',
+                                  ),
+                                  validator: (v) => v == null || v.isEmpty
+                                      ? 'Campo requerido'
+                                      : null,
+                                ),
+                              ),
+                            ],
                           ),
                           const SizedBox(height: 20),
                           Row(
@@ -259,17 +385,53 @@ class _ConfiguracionPaddlePageState extends State<ConfiguracionPaddlePage> {
                             ],
                           ),
                           const SizedBox(height: 20),
-                          TextFormField(
-                            controller: _precioPaletaCtrl,
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
-                              labelText: 'Precio Alquiler de Paleta',
-                              border: OutlineInputBorder(),
-                              prefixText: '\$ ',
-                            ),
-                            validator: (v) => v == null || v.isEmpty
-                                ? 'Campo requerido'
-                                : null,
+                          Row(
+                            children: [
+                              Expanded(
+                                child: TextFormField(
+                                  controller: _horaAperturaCtrl,
+                                  keyboardType: TextInputType.number,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Hora de apertura',
+                                    border: OutlineInputBorder(),
+                                    suffixText: ' hs',
+                                  ),
+                                  validator: (v) {
+                                    final h = int.tryParse(v ?? '');
+                                    if (h == null || h < 0 || h > 23) {
+                                      return 'Inválido (0-23)';
+                                    }
+                                    return null;
+                                  },
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: TextFormField(
+                                  controller: _horaCierreCtrl,
+                                  keyboardType: TextInputType.number,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Hora de cierre',
+                                    border: OutlineInputBorder(),
+                                    suffixText: ' hs',
+                                  ),
+                                  validator: (v) {
+                                    final h = int.tryParse(v ?? '');
+                                    if (h == null || h < 1 || h > 24) {
+                                      return 'Inválido (1-24)';
+                                    }
+                                    return null;
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          const Text(
+                            'El precio de alquiler de paletas/pelotas ahora se '
+                            'carga como producto de Pro-Shop en Inventario '
+                            '(tipo "Pro-Shop"), con stock real.',
+                            style: TextStyle(color: Colors.grey, fontSize: 12),
                           ),
                         ],
                       ),
@@ -277,8 +439,9 @@ class _ConfiguracionPaddlePageState extends State<ConfiguracionPaddlePage> {
                   ),
                   const SizedBox(width: 32),
 
-                  // BLOQUE Derecho: El ABM de Canchas Físicas Recuperado
+                  // BLOQUE Derecho: ABM de canchas (canchas_padel).
                   Expanded(
+                    flex: 2,
                     child: Container(
                       padding: const EdgeInsets.all(32),
                       decoration: BoxDecoration(
@@ -289,87 +452,62 @@ class _ConfiguracionPaddlePageState extends State<ConfiguracionPaddlePage> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text(
-                            'ABM de Canchas del Complejo',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const Text(
-                            'Agregá o eliminá las canchas que aparecerán operativas en la grilla diaria.',
-                            style: TextStyle(color: Colors.grey, fontSize: 13),
-                          ),
-                          const SizedBox(height: 24),
-
                           Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              Expanded(
-                                child: TextFormField(
-                                  controller: _nuevaCanchaCtrl,
-                                  decoration: const InputDecoration(
-                                    labelText:
-                                        'Nombre de la Cancha (ej: Cancha 4 Cristal)',
-                                    border: OutlineInputBorder(),
-                                  ),
+                              const Text(
+                                'Canchas del Complejo',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
                                 ),
                               ),
-                              const SizedBox(width: 12),
-                              ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.indigo,
-                                  foregroundColor: Colors.white,
-                                  minimumSize: const Size(60, 54),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(8),
+                              if (_filas.isEmpty)
+                                TextButton.icon(
+                                  onPressed: _migrando
+                                      ? null
+                                      : _migrarCanchasLegacy,
+                                  icon: _migrando
+                                      ? const SizedBox(
+                                          width: 14,
+                                          height: 14,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        )
+                                      : const Icon(Icons.sync, size: 18),
+                                  label: const Text(
+                                    'Migrar canchas antiguas',
                                   ),
                                 ),
-                                onPressed: _agregarCanchaALista,
-                                child: const Icon(Icons.add),
-                              ),
                             ],
                           ),
-                          const SizedBox(height: 24),
                           const Text(
-                            'Canchas en Funcionamiento:',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 14,
-                            ),
+                            'Dejá el precio/horario de una cancha en blanco '
+                            'para que use el valor de referencia de la '
+                            'izquierda.',
+                            style: TextStyle(color: Colors.grey, fontSize: 13),
                           ),
-                          const SizedBox(height: 12),
-
-                          if (_canchasExistentes.isEmpty)
-                            const Text(
-                              'No hay canchas dadas de alta en el complejo.',
-                              style: TextStyle(
-                                color: Colors.grey,
-                                fontSize: 13,
+                          const SizedBox(height: 16),
+                          if (_filas.isEmpty)
+                            const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 12),
+                              child: Text(
+                                'No hay canchas cargadas todavía. Usá '
+                                '"Migrar canchas antiguas" si ya tenías '
+                                'canchas configuradas, o agregá una nueva '
+                                'abajo.',
+                                style: TextStyle(color: Colors.grey),
                               ),
                             )
                           else
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: _canchasExistentes.map((cancha) {
-                                return Chip(
-                                  label: Text(
-                                    cancha,
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                  backgroundColor: const Color(0xFFF1F5F9),
-                                  deleteIcon: const Icon(
-                                    Icons.cancel,
-                                    size: 18,
-                                    color: Colors.red,
-                                  ),
-                                  onDeleted: () =>
-                                      _removerCanchaDeLista(cancha),
-                                );
-                              }).toList(),
-                            ),
+                            ..._filas.map(_buildFilaCancha),
+                          const SizedBox(height: 12),
+                          OutlinedButton.icon(
+                            onPressed: _agregarCancha,
+                            icon: const Icon(Icons.add),
+                            label: const Text('Agregar cancha'),
+                          ),
                         ],
                       ),
                     ),
@@ -378,7 +516,6 @@ class _ConfiguracionPaddlePageState extends State<ConfiguracionPaddlePage> {
               ),
               const SizedBox(height: 32),
 
-              // Botón único de Guardado Centralizado
               SizedBox(
                 height: 52,
                 width: 400,
@@ -410,6 +547,150 @@ class _ConfiguracionPaddlePageState extends State<ConfiguracionPaddlePage> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildFilaCancha(_FilaCanchaPadel fila) {
+    return Container(
+      key: ValueKey(fila.idOriginal.isNotEmpty ? fila.idOriginal : fila),
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                flex: 2,
+                child: TextFormField(
+                  initialValue: fila.nombre,
+                  decoration: const InputDecoration(
+                    labelText: 'Nombre',
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                  ),
+                  onChanged: (v) => fila.nombre = v,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  initialValue: fila.tipoSuperficie,
+                  decoration: const InputDecoration(
+                    labelText: 'Superficie',
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                  ),
+                  items: _tiposSuperficie
+                      .map((t) => DropdownMenuItem(value: t, child: Text(t)))
+                      .toList(),
+                  onChanged: (v) =>
+                      setState(() => fila.tipoSuperficie = v ?? 'Cristal'),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Eliminar cancha',
+                icon: const Icon(Icons.delete_outline, color: Colors.red),
+                onPressed: () => _eliminarCancha(fila),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextFormField(
+                  initialValue: fila.precioSocioTxt,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Precio socio (opcional)',
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                    prefixText: '\$ ',
+                  ),
+                  onChanged: (v) => fila.precioSocioTxt = v,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextFormField(
+                  initialValue: fila.precioExternoTxt,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Precio externo (opcional)',
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                    prefixText: '\$ ',
+                  ),
+                  onChanged: (v) => fila.precioExternoTxt = v,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextFormField(
+                  initialValue: fila.horaLuzTxt,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Inicio de luz (opcional)',
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                    suffixText: ' hs',
+                  ),
+                  onChanged: (v) => fila.horaLuzTxt = v,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextFormField(
+                  initialValue: fila.precioLuzTxt,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Plus luz (opcional)',
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                    prefixText: '\$ ',
+                  ),
+                  onChanged: (v) => fila.precioLuzTxt = v,
+                ),
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              Expanded(
+                child: SwitchListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Activa', style: TextStyle(fontSize: 13)),
+                  value: fila.activa,
+                  onChanged: (v) => setState(() => fila.activa = v),
+                ),
+              ),
+              Expanded(
+                child: SwitchListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text(
+                    'Admite turnos fijos',
+                    style: TextStyle(fontSize: 13),
+                  ),
+                  value: fila.permiteTurnosFijos,
+                  onChanged: (v) => setState(() => fila.permiteTurnosFijos = v),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

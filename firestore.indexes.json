@@ -15,6 +15,54 @@
         { "fieldPath": "facturadoArca", "order": "ASCENDING" },
         { "fieldPath": "fecha", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "reservas_canchas",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "turnoRecurrenteId", "order": "ASCENDING" },
+        { "fieldPath": "fecha", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "clases_padel",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "profesorId", "order": "ASCENDING" },
+        { "fieldPath": "fecha", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "clases_padel",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "cancha", "order": "ASCENDING" },
+        { "fieldPath": "fecha", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "pagos_clases_padel",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "socioId", "order": "ASCENDING" },
+        { "fieldPath": "fecha", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "pagos_clases_padel",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "claseId", "order": "ASCENDING" },
+        { "fieldPath": "estadoPagoMP", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "clases_padel",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "turnoRecurrenteClaseId", "order": "ASCENDING" },
+        { "fieldPath": "fecha", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": [

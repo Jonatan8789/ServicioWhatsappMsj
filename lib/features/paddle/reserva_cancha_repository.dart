@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'paddle_ids.dart';
 import 'reserva_cancha_model.dart';
 
 /// Se lanza cuando, dentro de la transacción atómica, alguna de las horas
@@ -11,22 +12,30 @@ class HorarioOcupadoException implements Exception {
   String toString() => message;
 }
 
+/// Se lanza cuando no hay stock suficiente en `inventario_general` para
+/// alguno de los ítems de Pro-Shop (paleta, pelotas) que se intentan vender
+/// junto con la reserva.
+class StockInsuficienteException implements Exception {
+  final String productoNombre;
+  final int stockDisponible;
+  StockInsuficienteException(this.productoNombre, this.stockDisponible);
+  @override
+  String toString() =>
+      'No hay stock suficiente de "$productoNombre" (quedan $stockDisponible).';
+}
+
 List<DocumentReference<Map<String, dynamic>>> _slotRefsDeReserva(
   FirebaseFirestore firestore,
   ReservaCanchaModel reserva,
 ) {
-  final fecha = reserva.fecha;
-  final fechaIdStr = "${fecha.year}-${fecha.month}-${fecha.day}";
-  final canchaLimpia = reserva.cancha.replaceAll(' ', '');
   return [
-    for (
-      int h = reserva.horaInicio;
-      h < reserva.horaInicio + reserva.duracionHoras;
-      h++
-    )
-      firestore
-          .collection('reservas_canchas_slots')
-          .doc('${fechaIdStr}_${canchaLimpia}_${h}hs'),
+    for (final slotId in idsSlotsCancha(
+      fecha: reserva.fecha,
+      cancha: reserva.cancha,
+      horaInicio: reserva.horaInicio,
+      duracionHoras: reserva.duracionHoras,
+    ))
+      firestore.collection('reservas_canchas_slots').doc(slotId),
   ];
 }
 
@@ -57,6 +66,11 @@ Future<void> reservarCanchaAtomica({
   final fecha = reserva.fecha;
   final fechaUtc = DateTime(fecha.year, fecha.month, fecha.day);
 
+  final inventarioRefs = {
+    for (final item in reserva.itemsProShop)
+      item.productoId: firestore.collection('inventario_general').doc(item.productoId),
+  };
+
   await firestore.runTransaction((transaction) async {
     // Todas las lecturas van antes que cualquier escritura (lo exige
     // Firestore dentro de una transacción).
@@ -64,6 +78,18 @@ Future<void> reservarCanchaAtomica({
       final slotSnap = await transaction.get(slotRef);
       if (slotSnap.exists) {
         throw HorarioOcupadoException();
+      }
+    }
+
+    // 🎾 Pro-Shop real: valida que haya stock de cada ítem ANTES de vender
+    // nada — si falta aunque sea uno, no se crea ni la reserva ni se
+    // descuenta ningún otro stock (todo o nada, mismo criterio que los
+    // slots de horario).
+    for (final item in reserva.itemsProShop) {
+      final invSnap = await transaction.get(inventarioRefs[item.productoId]!);
+      final stockActual = (invSnap.data()?['stockActual'] as num?)?.toInt() ?? 0;
+      if (!invSnap.exists || stockActual < item.cantidad) {
+        throw StockInsuficienteException(item.nombre, stockActual);
       }
     }
 
@@ -76,6 +102,21 @@ Future<void> reservarCanchaAtomica({
         'reservaId': reserva.id,
         'cancha': reserva.cancha,
         'fecha': Timestamp.fromDate(fechaUtc),
+      });
+    }
+
+    for (final item in reserva.itemsProShop) {
+      transaction.update(inventarioRefs[item.productoId]!, {
+        'stockActual': FieldValue.increment(-item.cantidad),
+      });
+      transaction.set(firestore.collection('movimientos_stock').doc(), {
+        'productoId': item.productoId,
+        'productoNombre': item.nombre,
+        'tipo': 'Venta Pro-Shop Pádel',
+        'cantidad': -item.cantidad,
+        'referencia': reserva.id,
+        'usuario': null,
+        'fecha': FieldValue.serverTimestamp(),
       });
     }
   });
@@ -93,6 +134,24 @@ Future<void> cancelarReservaCanchaAtomica({
   batch.delete(firestore.collection('reservas_canchas').doc(reserva.id));
   for (final slotRef in _slotRefsDeReserva(firestore, reserva)) {
     batch.delete(slotRef);
+  }
+  // 🎾 Si la reserva incluía paletas/pelotas del Pro-Shop, el stock vendido
+  // se devuelve a inventario_general — antes de conectar el Pro-Shop al
+  // stock real esto no hacía falta (era un cargo fijo sin stock detrás).
+  for (final item in reserva.itemsProShop) {
+    batch.update(
+      firestore.collection('inventario_general').doc(item.productoId),
+      {'stockActual': FieldValue.increment(item.cantidad)},
+    );
+    batch.set(firestore.collection('movimientos_stock').doc(), {
+      'productoId': item.productoId,
+      'productoNombre': item.nombre,
+      'tipo': 'Devolución por cancelación (Pádel)',
+      'cantidad': item.cantidad,
+      'referencia': reserva.id,
+      'usuario': null,
+      'fecha': FieldValue.serverTimestamp(),
+    });
   }
   await batch.commit();
 }

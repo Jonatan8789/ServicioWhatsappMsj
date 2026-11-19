@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'cancha_padel_model.dart';
+import 'cancha_padel_repository.dart';
+import 'paddle_ids.dart';
 import 'partido_abierto_model.dart';
 import 'partido_abierto_repository.dart';
 import 'reserva_cancha_model.dart';
@@ -13,6 +16,8 @@ const List<String> categoriasPartidoAbierto = [
   '5ta',
   '4ta (Avanzado)',
 ];
+
+const List<String> posicionesPadel = ['Indistinto', 'Drive', 'Revés'];
 
 class CrearPartidoAbiertoPage extends StatefulWidget {
   const CrearPartidoAbiertoPage({super.key});
@@ -27,6 +32,7 @@ class _CrearPartidoAbiertoPageState extends State<CrearPartidoAbiertoPage> {
 
   bool _cargando = true;
   Map<String, dynamic>? _datosSocio;
+  String? _socioDocId;
 
   double _precioBaseSocio = 4500.0;
   int _horaInicioCargaLuz = 20;
@@ -34,11 +40,25 @@ class _CrearPartidoAbiertoPageState extends State<CrearPartidoAbiertoPage> {
   int _horaApertura = 8;
   int _horaCierre = 23;
   List<String> _canchasActivas = [];
+  List<CanchaPadelModel> _canchasPadel = [];
+
+  CanchaPadelModel? _canchaPadelDe(String nombre) {
+    for (final c in _canchasPadel) {
+      if (c.nombre == nombre) return c;
+    }
+    return null;
+  }
 
   DateTime _fechaSeleccionada = DateTime.now();
   String? _canchaSeleccionada;
   int? _horaInicioSeleccionada;
   String _categoriaSeleccionada = categoriasPartidoAbierto[2];
+
+  // 🎾 Perfil de jugador (Fase 6): categoría/posición propias, editables
+  // acá mismo antes de crear el partido.
+  String? _categoriaPadelPropia;
+  String _posicionPadelPropia = posicionesPadel[0];
+  bool _guardandoPerfilPadel = false;
 
   @override
   void initState() {
@@ -50,11 +70,26 @@ class _CrearPartidoAbiertoPageState extends State<CrearPartidoAbiertoPage> {
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user != null) {
-        final docSocio = await _firestore
+        // 🚨 El id del doc 'socios/{id}' NO es el uid de Auth — buscar por
+        // 'usuarioUid' (mismo criterio que partidos_abiertos_page.dart).
+        // Antes esto buscaba .doc(user.uid) directo: para cualquier socio
+        // migrado (id de alta distinto del uid) nunca encontraba la ficha,
+        // dejaba _datosSocio null (el nombre caía a "Socio" genérico) y,
+        // peor, _confirmarCreacion() terminaba mandando el auth.uid como si
+        // fuera el id de socios/{id} — la regla de creación de
+        // 'partidos_abiertos' lo rechazaba siempre con permission-denied.
+        final querySocio = await _firestore
             .collection('socios')
-            .doc(user.uid)
+            .where('usuarioUid', isEqualTo: user.uid)
+            .limit(1)
             .get();
-        if (docSocio.exists) _datosSocio = docSocio.data();
+        if (querySocio.docs.isNotEmpty) {
+          _socioDocId = querySocio.docs.first.id;
+          _datosSocio = querySocio.docs.first.data();
+          _categoriaPadelPropia = _datosSocio?['categoriaPadel']?.toString();
+          _posicionPadelPropia =
+              _datosSocio?['posicionPadel']?.toString() ?? posicionesPadel[0];
+        }
       }
 
       final docAjustes = await _firestore
@@ -72,13 +107,8 @@ class _CrearPartidoAbiertoPageState extends State<CrearPartidoAbiertoPage> {
         _horaCierre = (d['hora_cierre'] as num?)?.toInt() ?? 23;
       }
 
-      final docCanchas = await _firestore
-          .collection('configuracion_paddle')
-          .doc('canchas')
-          .get();
-      _canchasActivas = (docCanchas.exists && docCanchas.data()?['lista'] != null)
-          ? List<String>.from(docCanchas.data()!['lista'])
-          : ['Cancha 1 Cristal', 'Cancha 2 Cristal', 'Cancha 3 Muro'];
+      _canchasPadel = await obtenerCanchasPadel(_firestore);
+      _canchasActivas = await obtenerNombresCanchasActivas(_firestore);
       if (_canchasActivas.isNotEmpty) {
         _canchaSeleccionada = _canchasActivas.first;
       }
@@ -89,13 +119,37 @@ class _CrearPartidoAbiertoPageState extends State<CrearPartidoAbiertoPage> {
     }
   }
 
-  double get _precioTotalCancha {
-    if (_horaInicioSeleccionada == null) return 0.0;
-    double total = _precioBaseSocio;
-    if (_horaInicioSeleccionada! >= _horaInicioCargaLuz) {
-      total += _plusLuzAnexo;
+  Future<void> _guardarPerfilPadel(String categoria, String posicion) async {
+    if (_socioDocId == null) return;
+    setState(() => _guardandoPerfilPadel = true);
+    try {
+      await _firestore.collection('socios').doc(_socioDocId).update({
+        'categoriaPadel': categoria,
+        'posicionPadel': posicion,
+      });
+      if (mounted) {
+        setState(() {
+          _categoriaPadelPropia = categoria;
+          _posicionPadelPropia = posicion;
+        });
+        _snack('✅ Perfil de pádel actualizado.', Colors.green);
+      }
+    } catch (e) {
+      _snack('Error al guardar tu perfil: $e', Colors.red);
+    } finally {
+      if (mounted) setState(() => _guardandoPerfilPadel = false);
     }
-    return total;
+  }
+
+  double get _precioTotalCancha {
+    if (_horaInicioSeleccionada == null || _canchaSeleccionada == null) {
+      return 0.0;
+    }
+    final c = _canchaPadelDe(_canchaSeleccionada!);
+    final base = c?.precioBaseHoraSocio ?? _precioBaseSocio;
+    final horaLuz = c?.horaInicioLuz ?? _horaInicioCargaLuz;
+    final plusLuz = c?.precioAdicionalLuz ?? _plusLuzAnexo;
+    return _horaInicioSeleccionada! >= horaLuz ? base + plusLuz : base;
   }
 
   void _snack(String msg, Color color) {
@@ -108,17 +162,24 @@ class _CrearPartidoAbiertoPageState extends State<CrearPartidoAbiertoPage> {
   Future<void> _confirmarCreacion() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null ||
+        _socioDocId == null ||
         _canchaSeleccionada == null ||
         _horaInicioSeleccionada == null) {
-      _snack('Seleccioná cancha y horario.', Colors.orange);
+      _snack(
+        _socioDocId == null
+            ? 'No encontramos tu ficha de socio. Contactá a administración.'
+            : 'Seleccioná cancha y horario.',
+        Colors.orange,
+      );
       return;
     }
 
-    final fechaIdStr =
-        "${_fechaSeleccionada.year}-${_fechaSeleccionada.month}-${_fechaSeleccionada.day}";
-    final canchaLimpia = _canchaSeleccionada!.replaceAll(' ', '');
-    final reservaId =
-        "${fechaIdStr}_${canchaLimpia}_${_horaInicioSeleccionada}hs_duracion1h";
+    final reservaId = idReservaCancha(
+      fecha: _fechaSeleccionada,
+      cancha: _canchaSeleccionada!,
+      horaInicio: _horaInicioSeleccionada!,
+      duracionHoras: 1,
+    );
     final String nombreSocio = _datosSocio != null
         ? '${_datosSocio!['nombre'] ?? ''} ${_datosSocio!['apellido'] ?? ''}'
               .trim()
@@ -132,7 +193,7 @@ class _CrearPartidoAbiertoPageState extends State<CrearPartidoAbiertoPage> {
           id: reservaId,
           cancha: _canchaSeleccionada!,
           nombreCliente: nombreSocio,
-          socioId: user.uid,
+          socioId: _socioDocId,
           fecha: _fechaSeleccionada,
           horaInicio: _horaInicioSeleccionada!,
           duracionHoras: 1,
@@ -140,8 +201,9 @@ class _CrearPartidoAbiertoPageState extends State<CrearPartidoAbiertoPage> {
           metodoPago: 'Cuenta Corriente',
         ),
         categoria: _categoriaSeleccionada,
-        organizadorId: user.uid,
+        organizadorId: _socioDocId!,
         organizadorNombre: nombreSocio,
+        ventaSocioId: user.uid,
       );
       if (mounted) {
         _snack(
@@ -209,6 +271,21 @@ class _CrearPartidoAbiertoPageState extends State<CrearPartidoAbiertoPage> {
                       () => _categoriaSeleccionada = v ?? _categoriaSeleccionada,
                     ),
                   ),
+                  if (_categoriaPadelPropia != null &&
+                      _categoriaPadelPropia != _categoriaSeleccionada)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                        '⚠️ Tu categoría registrada es $_categoriaPadelPropia — '
+                        'distinta a la de este partido. Podés crearlo igual.',
+                        style: const TextStyle(
+                          color: Colors.orange,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  const SizedBox(height: 16),
+                  _buildPerfilPadelCard(),
                   const SizedBox(height: 12),
                   ListTile(
                     tileColor: Colors.white,
@@ -286,6 +363,107 @@ class _CrearPartidoAbiertoPageState extends State<CrearPartidoAbiertoPage> {
                 ],
               ),
             ),
+    );
+  }
+
+  Widget _buildPerfilPadelCard() {
+    // Estado local del diálogo de edición: arranca en lo ya guardado (o el
+    // default) y sólo se confirma al tocar "Guardar".
+    String categoriaEdit = _categoriaPadelPropia ?? categoriasPartidoAbierto[2];
+    String posicionEdit = _posicionPadelPropia;
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.badge_outlined, color: Colors.indigo),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              _categoriaPadelPropia != null
+                  ? 'Tu categoría: $_categoriaPadelPropia · $_posicionPadelPropia'
+                  : 'Todavía no cargaste tu categoría de pádel.',
+              style: const TextStyle(fontSize: 13),
+            ),
+          ),
+          TextButton(
+            onPressed: _guardandoPerfilPadel
+                ? null
+                : () async {
+                    final resultado = await showDialog<List<String>>(
+                      context: context,
+                      builder: (ctx) => StatefulBuilder(
+                        builder: (ctx, setModalState) => AlertDialog(
+                          title: const Text('Tu perfil de pádel'),
+                          content: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              DropdownButtonFormField<String>(
+                                initialValue: categoriaEdit,
+                                decoration: const InputDecoration(
+                                  labelText: 'Categoría',
+                                ),
+                                items: categoriasPartidoAbierto
+                                    .map(
+                                      (c) => DropdownMenuItem(
+                                        value: c,
+                                        child: Text(c),
+                                      ),
+                                    )
+                                    .toList(),
+                                onChanged: (v) => setModalState(
+                                  () => categoriaEdit = v ?? categoriaEdit,
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              DropdownButtonFormField<String>(
+                                initialValue: posicionEdit,
+                                decoration: const InputDecoration(
+                                  labelText: 'Posición preferida',
+                                ),
+                                items: posicionesPadel
+                                    .map(
+                                      (p) => DropdownMenuItem(
+                                        value: p,
+                                        child: Text(p),
+                                      ),
+                                    )
+                                    .toList(),
+                                onChanged: (v) => setModalState(
+                                  () => posicionEdit = v ?? posicionEdit,
+                                ),
+                              ),
+                            ],
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(ctx),
+                              child: const Text('Cancelar'),
+                            ),
+                            ElevatedButton(
+                              onPressed: () => Navigator.pop(ctx, [
+                                categoriaEdit,
+                                posicionEdit,
+                              ]),
+                              child: const Text('Guardar'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                    if (resultado != null) {
+                      await _guardarPerfilPadel(resultado[0], resultado[1]);
+                    }
+                  },
+            child: Text(_categoriaPadelPropia != null ? 'Editar' : 'Cargar'),
+          ),
+        ],
+      ),
     );
   }
 }

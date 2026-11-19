@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
+import '../paddle/paddle_ids.dart';
 import '../paddle/reserva_cancha_model.dart';
 import '../paddle/reserva_cancha_repository.dart';
 
@@ -60,18 +61,20 @@ class _SocioReservaPaddlePageState extends State<SocioReservaPaddlePage> {
       return;
     }
 
-    final fechaIdStr =
-        "${_fechaSeleccionada.year}-${_fechaSeleccionada.month}-${_fechaSeleccionada.day}";
     // 🚨 Antes este ID terminaba en "_socioApp", distinto del esquema que
     // usan canchas_page.dart / reserva_cancha_screen.dart
     // ("..._duracion{n}h"), así que una reserva hecha acá y otra hecha por
     // el staff para el mismo horario nunca colisionaban entre sí — dos
     // reservas "válidas" para la misma cancha/hora. Ahora se usa el mismo
-    // esquema de ID y, además, se repite la misma verificación de
-    // solapamiento que hacen esas pantallas antes de guardar.
-    final String canchaLimpia = _canchaSeleccionada!.replaceAll(' ', '');
-    final reservaId =
-        "${fechaIdStr}_${canchaLimpia}_${_horaInicioSeleccionada}hs_duracion1h";
+    // esquema de ID (centralizado en paddle_ids.dart) y, además, se repite
+    // la misma verificación de solapamiento que hacen esas pantallas antes
+    // de guardar.
+    final reservaId = idReservaCancha(
+      fecha: _fechaSeleccionada,
+      cancha: _canchaSeleccionada!,
+      horaInicio: _horaInicioSeleccionada!,
+      duracionHoras: 1,
+    );
 
     try {
       final nuevaReserva = ReservaCanchaModel(
@@ -132,8 +135,7 @@ class _SocioReservaPaddlePageState extends State<SocioReservaPaddlePage> {
 
   @override
   Widget build(BuildContext context) {
-    final fechaIdStr =
-        "${_fechaSeleccionada.year}-${_fechaSeleccionada.month}-${_fechaSeleccionada.day}";
+    final fechaIdStr = fechaIdStrCancha(_fechaSeleccionada);
 
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
@@ -238,8 +240,7 @@ class _SocioReservaPaddlePageState extends State<SocioReservaPaddlePage> {
                   final data = doc.data() as Map<String, dynamic>;
                   final DateTime fechaRes = (data['fecha'] as Timestamp)
                       .toDate();
-                  final String fId =
-                      "${fechaRes.year}-${fechaRes.month}-${fechaRes.day}";
+                  final String fId = fechaIdStrCancha(fechaRes);
                   if (fId == fechaIdStr) {
                     final String cancha = data['cancha'] ?? '';
                     final int hInicio = data['horaInicio'] ?? 0;

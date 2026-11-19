@@ -11,6 +11,10 @@ const admin = require('firebase-admin');
 const Afip = require('@afipsdk/afip.js');
 const axios = require('axios');
 const cheerio = require('cheerio');
+const {
+    obtenerIdTokenDeAdminActivo,
+    enviarWhatsappConTokenAdmin,
+} = require('./whatsapp_helpers');
 
 if (!admin.apps.length) {
     admin.initializeApp();
@@ -23,6 +27,7 @@ if (!admin.apps.length) {
 // esos dos triggers nunca se desplegaban: vivían en el repo pero no existían
 // en producción.
 Object.assign(exports, require('./notificaciones'));
+Object.assign(exports, require('./notificaciones_whatsapp_padel'));
 
 // =========================================================================
 // AUTORIZACIÓN: sólo usuarios con rol 'admin' en /usuarios/{uid} pueden
@@ -830,6 +835,34 @@ exports.crearCobroMercadoPagoSocio = functions.https.onCall(async (data, context
             });
         }
 
+        // 🎾 Pago online de una clase de pádel (Fase 4). 'pagos_clases_padel'
+        // tiene DOS campos de estado a propósito separados (ver
+        // clase_padel_model.dart): 'cobrado' para el circuito manual de caja
+        // y 'estadoPagoMP' para este circuito online, así nunca se pisan
+        // entre sí. _validarYRegistrarCobroMP sólo conoce 'estadoPagoMP' —
+        // hace falta este chequeo extra de 'cobrado' acá para no generar un
+        // cobro online de algo que el cajero ya cobró en efectivo.
+        if (tipo === 'clase_padel') {
+            const { pagoClaseId } = data;
+            if (!pagoClaseId) return { success: false, error: 'Falta el pago.' };
+            const pagoRef = db.collection('pagos_clases_padel').doc(pagoClaseId);
+            const pagoSnap = await pagoRef.get();
+            if (!pagoSnap.exists) return { success: false, error: 'El pago no existe.' };
+            if (pagoSnap.data().socioId !== socioId) {
+                throw new functions.https.HttpsError('permission-denied', 'Ese pago no te pertenece.');
+            }
+            if (pagoSnap.data().cobrado === true) {
+                return { success: false, error: 'Ese pago ya fue cobrado.' };
+            }
+            return await _generarPreferenciaMercadoPago({
+                ruta: pagoRef.path,
+                campoMonto: 'monto',
+                campoMedioPago: 'medioPago',
+                concepto: `Clase de Pádel${pagoSnap.data().claseNombre ? `: ${pagoSnap.data().claseNombre}` : ''}`,
+                creadoPor: context.auth.uid,
+            });
+        }
+
         return { success: false, error: 'Tipo de cobro no reconocido.' };
     } catch (error) {
         if (error instanceof functions.https.HttpsError) throw error;
@@ -980,24 +1013,6 @@ exports.webhookMercadoPagoOrder = functions.https.onRequest(async (req, res) => 
 // lib/firebase_options.dart, no es un secreto) para poder invocar el
 // bridge de WhatsApp sin tener que agregarle un segundo mecanismo de auth
 // ni redeployar server.js en Render.
-async function obtenerIdTokenDeAdminActivo(db) {
-    const adminSnap = await db.collection('usuarios')
-        .where('rol', '==', 'admin')
-        .where('activo', '==', true)
-        .limit(1)
-        .get();
-    if (adminSnap.empty) {
-        throw new Error('No hay administradores activos configurados para enviar notificaciones.');
-    }
-    const customToken = await admin.auth().createCustomToken(adminSnap.docs[0].id);
-    const webApiKey = 'AIzaSyAMuXW3-rXtigeGmSFVYeKupPEqZkQQ2Lc'; // Web API Key pública (lib/firebase_options.dart)
-    const resp = await axios.post(
-        `https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${webApiKey}`,
-        { token: customToken, returnSecureToken: true }
-    );
-    return resp.data.idToken;
-}
-
 exports.notificarWhatsappSocio = functions.https.onCall(async (data, context) => {
     if (!context.auth) {
         throw new functions.https.HttpsError('unauthenticated', 'Necesitás iniciar sesión.');
@@ -1049,20 +1064,53 @@ exports.notificarWhatsappSocio = functions.https.onCall(async (data, context) =>
     }
 });
 
+// 📲 Fase 5: aviso de recibo del cobro MANUAL en caja — a diferencia de
+// notificarWhatsappSocio (que sólo deja a alguien notificarse a SÍ MISMO),
+// acá es el STAFF eligiendo a qué socio avisarle tras cobrarle algo a mano
+// (ver gestion_clases_padel_page.dart, "Registrar pago manual"). El
+// teléfono se resuelve del lado del servidor a partir de 'socioId' — el
+// cliente nunca puede mandar un teléfono arbitrario.
+// 'soloSiFlagActivo' (opcional) es el nombre de un campo booleano de
+// configuraciones_fiscales/whatsapp_reglas a chequear ANTES de mandar nada
+// — p. ej. 'notifPagoConfirmadoActivo' para el aviso de recibo del cobro
+// manual en caja (gestion_clases_padel_page.dart). El chequeo se hace acá
+// (Admin SDK, no pasa por reglas) y no en el cliente porque
+// 'configuraciones_fiscales' es de lectura sólo-admin — un cajero no podría
+// leerlo directo, así que el gating tiene que vivir del lado del servidor.
+exports.notificarWhatsappAdminASocio = functions.https.onCall(async (data, context) => {
+    await requireStaffOperativo(context);
+    try {
+        const { socioId, mensaje, soloSiFlagActivo } = data;
+        if (!socioId || !mensaje) {
+            return { success: false, error: 'Falta el socio o el mensaje.' };
+        }
+        const db = admin.firestore();
+
+        if (soloSiFlagActivo) {
+            const configSnap = await db.collection('configuraciones_fiscales').doc('whatsapp_reglas').get();
+            if (!(configSnap.exists && configSnap.data()[soloSiFlagActivo] === true)) {
+                return { success: true, omitido: true };
+            }
+        }
+
+        const socioSnap = await db.collection('socios').doc(socioId).get();
+        if (!socioSnap.exists) return { success: false, error: 'No se encontró ese socio.' };
+        const telefono = socioSnap.data().telefono;
+        if (!telefono) return { success: false, error: 'Ese socio no tiene teléfono registrado.' };
+
+        const idTokenAdmin = await obtenerIdTokenDeAdminActivo(db);
+        const enviado = await enviarWhatsappConTokenAdmin(idTokenAdmin, telefono, mensaje);
+        return { success: enviado, error: enviado ? undefined : 'No se pudo enviar el mensaje.' };
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+});
+
 // =========================================================================
 // RECORDATORIOS AUTOMÁTICOS POR WHATSAPP — cuota pendiente, apto médico
 // vencido/por vencer y reservas de cancha del día siguiente. Antes esto
 // dependía de que alguien del staff se acordara de avisar a mano.
 // =========================================================================
-
-function limpiarTelefonoAr(telefono) {
-    let limpio = (telefono || '').toString().replace(/\D/g, '');
-    if (!limpio) return '';
-    if (limpio.startsWith('0')) limpio = limpio.substring(1);
-    if (limpio.startsWith('15')) limpio = limpio.substring(2);
-    if (!limpio.startsWith('54')) limpio = `549${limpio}`;
-    return limpio;
-}
 
 function esperar(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -1085,22 +1133,6 @@ async function enviarPushSocio(fcmToken, { titulo, cuerpo, ruta }) {
         return true;
     } catch (error) {
         logger.warn(`enviarPushSocio: no se pudo enviar a ${fcmToken}: ${error.message}`);
-        return false;
-    }
-}
-
-async function enviarWhatsappConTokenAdmin(idTokenAdmin, telefono, mensaje) {
-    const limpio = limpiarTelefonoAr(telefono);
-    if (!limpio) return false;
-    try {
-        const resp = await axios.post(
-            'https://servicio-whatsapp-oqua.onrender.com/send-whatsapp',
-            { phone: limpio, message: mensaje },
-            { headers: { Authorization: `Bearer ${idTokenAdmin}` } }
-        );
-        return !!(resp.data && resp.data.success === true);
-    } catch (error) {
-        logger.warn(`recordatoriosDiarios: no se pudo enviar a ${limpio}: ${error.message}`);
         return false;
     }
 }
@@ -1334,12 +1366,29 @@ function _idsOcurrenciaCancha({ fecha, cancha, horaInicio, duracionHoras }) {
 // Calcula el precio igual que reserva_cancha_screen.dart (tarifa base por
 // hora + recargo de luz desde la hora configurada) — sin paleta/pelotas,
 // que no tienen sentido fijos para un abono semanal.
-async function _calcularPrecioCancha(db, { horaInicio, duracionHoras }) {
+//
+// 🎾 Canchas dinámicas (canchas_padel): si la cancha tiene su propio precio
+// u horario de luz cargado, se usa ese en vez del global de
+// configuraciones_paddle/ajustes_globales — mismo criterio de fallback que
+// cancha_padel_model.dart / canchas_page.dart del lado de Dart. El turno
+// fijo siempre es para un socio (ver _crearTurnoRecurrenteCancha), así que
+// acá sólo aplica el precio de socio, nunca el de externo.
+async function _calcularPrecioCancha(db, { cancha, horaInicio, duracionHoras }) {
     const ajustesSnap = await db.collection('configuraciones_paddle').doc('ajustes_globales').get();
     const a = ajustesSnap.exists ? ajustesSnap.data() : {};
-    const precioBase = a.precio_base_cancha ?? 4500;
-    const horaInicioLuz = a.hora_inicio_luz ?? 20;
-    const plusLuz = a.precio_adicional_luz ?? 1500;
+    const precioBaseGlobal = a.precio_base_cancha ?? 4500;
+    const horaInicioLuzGlobal = a.hora_inicio_luz ?? 20;
+    const plusLuzGlobal = a.precio_adicional_luz ?? 1500;
+
+    const canchaId = (cancha || '').replace(/ /g, '');
+    const canchaPadelSnap = canchaId
+        ? await db.collection('canchas_padel').doc(canchaId).get()
+        : null;
+    const overrides = canchaPadelSnap && canchaPadelSnap.exists ? canchaPadelSnap.data() : {};
+    const precioBase = overrides.precioBaseHoraSocio ?? precioBaseGlobal;
+    const horaInicioLuz = overrides.horaInicioLuz ?? horaInicioLuzGlobal;
+    const plusLuz = overrides.precioAdicionalLuz ?? plusLuzGlobal;
+
     let total = 0;
     for (let h = horaInicio; h < horaInicio + duracionHoras; h++) {
         total += precioBase;
@@ -1352,7 +1401,13 @@ async function _calcularPrecioCancha(db, { horaInicio, duracionHoras }) {
 // misma transacción atómica (chequeo de slots + reserva + slots, todo o
 // nada) que ya usa el autoservicio normal. Devuelve si pudo o si hubo
 // conflicto — no lanza para no cortar el loop de las demás semanas/turnos.
-async function _crearOcurrenciaTurnoFijo(db, { turno, fecha }) {
+//
+// 🎾 tipo='clase' (clases recurrentes, Fase 3): además de bloquear la
+// cancha igual que un turno fijo de cancha, crea el doc hermano en
+// 'clases_padel' (mismo shape que crearClasePadelAtomica del lado Dart,
+// ver clase_padel_repository.dart) para que los alumnos puedan
+// inscribirse en esa ocurrencia como en cualquier clase puntual.
+async function _crearOcurrenciaTurnoFijo(db, { turno, fecha, tipo = 'cancha' }) {
     const { reservaId, slotIds } = _idsOcurrenciaCancha({
         fecha, cancha: turno.cancha, horaInicio: turno.horaInicio, duracionHoras: turno.duracionHoras,
     });
@@ -1371,22 +1426,61 @@ async function _crearOcurrenciaTurnoFijo(db, { turno, fecha }) {
                 const slotSnap = await tx.get(slotRef);
                 if (slotSnap.exists) throw new Error('OCUPADO');
             }
-            tx.set(reservaRef, {
-                cancha: turno.cancha,
-                nombreCliente: turno.nombreCliente,
-                socioId: turno.socioId,
-                fecha: admin.firestore.Timestamp.fromDate(fechaUtc),
-                horaInicio: turno.horaInicio,
-                duracionHoras: turno.duracionHoras,
-                precio: turno.precio,
-                metodoPago: 'Cuenta Corriente',
-                estadoReserva: 'Confirmada',
-                seña_abonada: 0,
-                detalle_seña: '',
-                turnoRecurrenteId: turno.id,
-            });
+
+            if (tipo === 'clase') {
+                tx.set(reservaRef, {
+                    cancha: turno.cancha,
+                    nombreCliente: `Clase de Pádel: ${turno.nombreClase} (${turno.profesorNombre})`,
+                    fecha: admin.firestore.Timestamp.fromDate(fechaUtc),
+                    horaInicio: turno.horaInicio,
+                    duracionHoras: turno.duracionHoras,
+                    precio: 0,
+                    metodoPago: 'Clase de Pádel',
+                    estadoReserva: 'Confirmada',
+                    senaAbonada: 0,
+                    detalleSena: '',
+                });
+            } else {
+                tx.set(reservaRef, {
+                    cancha: turno.cancha,
+                    nombreCliente: turno.nombreCliente,
+                    socioId: turno.socioId,
+                    fecha: admin.firestore.Timestamp.fromDate(fechaUtc),
+                    horaInicio: turno.horaInicio,
+                    duracionHoras: turno.duracionHoras,
+                    precio: turno.precio,
+                    metodoPago: 'Cuenta Corriente',
+                    estadoReserva: 'Confirmada',
+                    senaAbonada: 0,
+                    detalleSena: '',
+                    turnoRecurrenteId: turno.id,
+                });
+            }
             for (const slotRef of slotRefs) {
                 tx.set(slotRef, { reservaId, cancha: turno.cancha, fecha: admin.firestore.Timestamp.fromDate(fechaUtc) });
+            }
+
+            if (tipo === 'clase') {
+                const claseRef = db.collection('clases_padel').doc();
+                tx.set(claseRef, {
+                    nombre: turno.nombreClase,
+                    profesorId: turno.profesorId,
+                    profesorNombre: turno.profesorNombre,
+                    cancha: turno.cancha,
+                    fecha: admin.firestore.Timestamp.fromDate(fechaUtc),
+                    horaInicio: turno.horaInicio,
+                    duracionHoras: turno.duracionHoras,
+                    cupoMaximo: turno.cupoMaximo,
+                    precioPorAlumno: turno.precioPorAlumno,
+                    reservaId,
+                    inscriptosIds: [],
+                    inscriptosNombres: [],
+                    listaEsperaIds: [],
+                    listaEsperaNombres: [],
+                    estadoClase: 'Programada',
+                    turnoRecurrenteClaseId: turno.id,
+                    creadoPor: turno.creadoPor || null,
+                });
             }
         });
         return { creada: true };
@@ -1399,7 +1493,7 @@ async function _crearOcurrenciaTurnoFijo(db, { turno, fecha }) {
 // hasta el horizonte — se llama tanto al crear el turno (para no esperar
 // al cron del día siguiente) como desde el cron diario (para ir corriendo
 // el horizonte hacia adelante a medida que pasan las semanas).
-async function _generarOcurrenciasDeUnTurno(db, turno) {
+async function _generarOcurrenciasDeUnTurno(db, turno, tipo = 'cancha') {
     const hoy = new Date();
     hoy.setHours(0, 0, 0, 0);
     // Próxima fecha que cae en turno.diaSemana (1=lunes..7=domingo, igual
@@ -1411,11 +1505,41 @@ async function _generarOcurrenciasDeUnTurno(db, turno) {
     let conflictos = 0;
     for (let semana = 0; semana < HORIZONTE_SEMANAS_TURNO_FIJO; semana++) {
         const fecha = new Date(primeraFecha.getTime() + semana * 7 * 24 * 60 * 60 * 1000);
-        const resultado = await _crearOcurrenciaTurnoFijo(db, { turno, fecha });
+        const resultado = await _crearOcurrenciaTurnoFijo(db, { turno, fecha, tipo });
         if (resultado.creada) creadas++;
         if (resultado.conflicto) conflictos++;
     }
     return { creadas, conflictos };
+}
+
+const _NOMBRES_DIAS_ES = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+
+// 📲 Fase 5: WhatsApp al socio apenas queda asignado su turno fijo — se
+// llama DIRECTO acá (no como trigger de Firestore) porque en este punto ya
+// se tiene todo el contexto a mano (socioId, cancha, día, hora) sin
+// necesidad de leer nada más que el teléfono. Gateado por
+// 'notifTurnoFijoActivo' (default apagado, mismo criterio de seguridad que
+// 'recordatoriosActivos') para no mandar WhatsApp real mientras se prueba.
+async function _notificarTurnoFijoConfirmado(db, { socioId, cancha, diaSemana, horaInicio }) {
+    try {
+        const configSnap = await db.collection('configuraciones_fiscales').doc('whatsapp_reglas').get();
+        if (!(configSnap.exists && configSnap.data().notifTurnoFijoActivo === true)) return;
+
+        const socioSnap = await db.collection('socios').doc(socioId).get();
+        const telefono = socioSnap.exists ? socioSnap.data().telefono : null;
+        if (!telefono) return;
+
+        const dia = _NOMBRES_DIAS_ES[(diaSemana || 1) - 1] || 'esa fecha';
+        const mensaje =
+            `🎾 *¡Turno fijo confirmado!*\n\n` +
+            `Tu turno fijo en *${cancha}* los *${dia}* a las *${horaInicio}:00hs* ` +
+            `quedó asignado con prioridad automática todas las semanas, hasta que lo canceles.`;
+
+        const idTokenAdmin = await obtenerIdTokenDeAdminActivo(db);
+        await enviarWhatsappConTokenAdmin(idTokenAdmin, telefono, mensaje);
+    } catch (error) {
+        logger.warn(`_notificarTurnoFijoConfirmado: no se pudo enviar: ${error.message}`);
+    }
 }
 
 async function _crearTurnoRecurrenteCancha({ socioId, nombreCliente, cancha, diaSemana, horaInicio, duracionHoras, creadoPor }) {
@@ -1424,7 +1548,7 @@ async function _crearTurnoRecurrenteCancha({ socioId, nombreCliente, cancha, dia
         return { success: false, error: 'Faltan datos del turno fijo (cancha, día, horario o duración).' };
     }
 
-    const precio = await _calcularPrecioCancha(db, { horaInicio, duracionHoras });
+    const precio = await _calcularPrecioCancha(db, { cancha, horaInicio, duracionHoras });
 
     const turnoRef = db.collection('turnos_recurrentes_canchas').doc();
     const turno = {
@@ -1443,6 +1567,8 @@ async function _crearTurnoRecurrenteCancha({ socioId, nombreCliente, cancha, dia
     await turnoRef.set(turno);
 
     const { creadas, conflictos } = await _generarOcurrenciasDeUnTurno(db, turno);
+
+    await _notificarTurnoFijoConfirmado(db, { socioId, cancha, diaSemana, horaInicio });
 
     return {
         success: true,
@@ -1576,6 +1702,144 @@ exports.generarOcurrenciasTurnosFijosCancha = onSchedule({
 });
 
 // =========================================================================
+// 🎾 CLASES RECURRENTES DE PÁDEL — mismo motor que los turnos fijos de
+// cancha de arriba (mismo horizonte de 8 semanas, misma transacción
+// anti-solapamiento), pero cada ocurrencia generada es además una CLASE
+// real en 'clases_padel' (con cupo, lista de espera y cobro por alumno) en
+// vez de una reserva a nombre de un solo socio.
+// =========================================================================
+
+async function _crearTurnoRecurrenteClasePadel({
+    profesorId, profesorNombre, nombreClase, cancha, diaSemana, horaInicio, duracionHoras, cupoMaximo, precioPorAlumno, creadoPor,
+}) {
+    const db = admin.firestore();
+    if (!cancha || !diaSemana || diaSemana < 1 || diaSemana > 7 || !horaInicio || !duracionHoras || !profesorId || !cupoMaximo) {
+        return { success: false, error: 'Faltan datos de la clase recurrente (profesor, cancha, día, horario, duración o cupo).' };
+    }
+
+    const turnoRef = db.collection('turnos_recurrentes_clases_padel').doc();
+    const turno = {
+        id: turnoRef.id,
+        profesorId,
+        profesorNombre,
+        nombreClase: nombreClase || 'Clase de Pádel',
+        cancha,
+        diaSemana,
+        horaInicio,
+        duracionHoras,
+        cupoMaximo,
+        precioPorAlumno: precioPorAlumno || 0,
+        activo: true,
+        creadoPor,
+        creadoEl: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    await turnoRef.set(turno);
+
+    const { creadas, conflictos } = await _generarOcurrenciasDeUnTurno(db, turno, 'clase');
+
+    return {
+        success: true,
+        turnoId: turnoRef.id,
+        ocurrenciasCreadas: creadas,
+        conflictos,
+    };
+}
+
+exports.crearTurnoRecurrenteClasePadelStaff = functions.https.onCall(async (data, context) => {
+    await requireStaffOperativo(context);
+    try {
+        const {
+            profesorId, profesorNombre, nombreClase, cancha, diaSemana, horaInicio, duracionHoras, cupoMaximo, precioPorAlumno,
+        } = data;
+        return await _crearTurnoRecurrenteClasePadel({
+            profesorId, profesorNombre, nombreClase, cancha, diaSemana, horaInicio, duracionHoras, cupoMaximo, precioPorAlumno,
+            creadoPor: context.auth.uid,
+        });
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+});
+
+// Cancela la clase recurrente y libera las ocurrencias futuras que todavía
+// no pasaron — PERO nunca borra en silencio una ocurrencia que ya tiene
+// alumnos anotados (inscriptos o en lista de espera): esas quedan intactas
+// y se devuelven en 'clasesConAlumnos' para que el staff decida a mano qué
+// hacer con esos alumnos (avisarles, reubicarlos, etc.), mismo criterio
+// conservador que ya usa el motor de turno fijo de cancha con una reserva
+// ajena ya confirmada.
+exports.cancelarTurnoRecurrenteClasePadel = functions.https.onCall(async (data, context) => {
+    await requireStaffOperativo(context);
+    try {
+        const { turnoId } = data;
+        if (!turnoId) return { success: false, error: 'Falta el id de la clase recurrente.' };
+        const db = admin.firestore();
+        const turnoRef = db.collection('turnos_recurrentes_clases_padel').doc(turnoId);
+        const turnoSnap = await turnoRef.get();
+        if (!turnoSnap.exists) return { success: false, error: 'No se encontró la clase recurrente.' };
+
+        await turnoRef.update({ activo: false });
+
+        const hoy = new Date();
+        hoy.setHours(0, 0, 0, 0);
+        const futurasSnap = await db.collection('clases_padel')
+            .where('turnoRecurrenteClaseId', '==', turnoId)
+            .where('fecha', '>=', admin.firestore.Timestamp.fromDate(hoy))
+            .get();
+
+        const batch = db.batch();
+        let liberadas = 0;
+        const clasesConAlumnos = [];
+        for (const doc of futurasSnap.docs) {
+            const c = doc.data();
+            const tieneAlumnos =
+                (c.inscriptosIds && c.inscriptosIds.length > 0) ||
+                (c.listaEsperaIds && c.listaEsperaIds.length > 0);
+            if (tieneAlumnos) {
+                clasesConAlumnos.push({
+                    claseId: doc.id,
+                    fecha: _fechaIdStrCancha(c.fecha.toDate()),
+                    inscriptos: (c.inscriptosIds || []).length,
+                    enEspera: (c.listaEsperaIds || []).length,
+                });
+                continue;
+            }
+            const { slotIds } = _idsOcurrenciaCancha({
+                fecha: c.fecha.toDate(), cancha: c.cancha, horaInicio: c.horaInicio, duracionHoras: c.duracionHoras,
+            });
+            batch.delete(doc.ref);
+            batch.delete(db.collection('reservas_canchas').doc(c.reservaId));
+            for (const slotId of slotIds) batch.delete(db.collection('reservas_canchas_slots').doc(slotId));
+            liberadas++;
+        }
+        await batch.commit();
+
+        return { success: true, semanasLiberadas: liberadas, clasesConAlumnos };
+    } catch (error) {
+        if (error instanceof functions.https.HttpsError) throw error;
+        return { success: false, error: error.message };
+    }
+});
+
+// ⏰ Mismo criterio que generarOcurrenciasTurnosFijosCancha, 5 minutos
+// después para no competir por los mismos documentos a la misma hora.
+exports.generarOcurrenciasTurnosFijosClasesPadel = onSchedule({
+    schedule: '20 10 * * *',
+    timeZone: 'America/Argentina/Buenos_Aires',
+    timeoutSeconds: 540,
+}, async () => {
+    const db = admin.firestore();
+    const turnosSnap = await db.collection('turnos_recurrentes_clases_padel').where('activo', '==', true).get();
+    let totalCreadas = 0;
+    let totalConflictos = 0;
+    for (const doc of turnosSnap.docs) {
+        const { creadas, conflictos } = await _generarOcurrenciasDeUnTurno(db, doc.data(), 'clase');
+        totalCreadas += creadas;
+        totalConflictos += conflictos;
+    }
+    logger.info(`generarOcurrenciasTurnosFijosClasesPadel: turnos=${turnosSnap.size}, ocurrenciasCreadas=${totalCreadas}, conflictos=${totalConflictos}`);
+});
+
+// =========================================================================
 // 🌐 DISPONIBILIDAD PÚBLICA DE PÁDEL — para mostrar en el sitio web
 // (visitante anónimo, sin login) algo como "hoy quedan 6 turnos libres".
 // Sólo devuelve conteos agregados, nunca nombres ni datos de socios — por
@@ -1617,9 +1881,19 @@ exports.obtenerDisponibilidadPublicaPadel = functions.https.onRequest(async (req
         const horaApertura = (ajustesSnap.data()?.hora_apertura) ?? 8;
         const horaCierre = (ajustesSnap.data()?.hora_cierre) ?? 23;
 
-        const canchasSnap = await db.collection('configuracion_paddle').doc('canchas').get();
-        const listaCanchas = canchasSnap.data()?.lista || [];
-        const numCanchas = listaCanchas.length || 1;
+        // 🎾 Canchas dinámicas (canchas_padel): prioriza la cantidad de
+        // canchas activas ahí; si todavía no hay ninguna migrada, cae al
+        // doc plano legacy (mismo criterio que cancha_padel_repository.dart
+        // del lado de Dart).
+        const canchasPadelSnap = await db.collection('canchas_padel').where('activa', '==', true).get();
+        let numCanchas;
+        if (!canchasPadelSnap.empty) {
+            numCanchas = canchasPadelSnap.size;
+        } else {
+            const canchasSnap = await db.collection('configuracion_paddle').doc('canchas').get();
+            const listaCanchas = canchasSnap.data()?.lista || [];
+            numCanchas = listaCanchas.length || 1;
+        }
 
         const hoy = new Date();
         const manana = new Date(hoy.getTime() + 24 * 60 * 60 * 1000);
@@ -1636,6 +1910,141 @@ exports.obtenerDisponibilidadPublicaPadel = functions.https.onRequest(async (req
         res.status(200).json({ hoy: disponibilidadHoy, manana: disponibilidadManana });
     } catch (error) {
         res.status(500).json({ error: error.message });
+    }
+});
+
+// =========================================================================
+// 🎾 CLASES DE PÁDEL — inscripción con cupo + lista de espera FIFO y cobro
+// por alumno (ver clase_padel_repository.dart, mismo criterio del lado
+// Dart). El alta y la inscripción corren directo desde el cliente
+// (transacción de Firestore, igual que clases_gimnasio/partidos_abiertos);
+// esta única Cloud Function existe porque la CANCELACIÓN de un socio puede
+// promover a otra persona de la lista de espera, y esa promoción le crea
+// una 'venta_pendiente' a ESE TERCERO — algo que un socio no puede hacer
+// directo desde el cliente (la regla de 'ventas_pendientes' exige que
+// socio_id sea el propio auth.uid de quien escribe, y acá quien escribe es
+// el que cancela, no el promovido). El staff sí puede hacerlo directo
+// desde la app (bypassa esa regla vía esStaffOperativo()).
+// =========================================================================
+
+function _idPagoClasePadel(claseId, socioId) {
+    return `${claseId}_${socioId}`;
+}
+
+exports.cancelarInscripcionClasePadelSocio = functions.https.onCall(async (data, context) => {
+    if (!context.auth) {
+        throw new functions.https.HttpsError('unauthenticated', 'Necesitás iniciar sesión.');
+    }
+    const db = admin.firestore();
+    try {
+        const { claseId } = data;
+        if (!claseId) return { success: false, error: 'Falta el id de la clase.' };
+
+        const querySocio = await db.collection('socios')
+            .where('usuarioUid', '==', context.auth.uid)
+            .limit(1)
+            .get();
+        if (querySocio.empty) return { success: false, error: 'No encontramos tu ficha de socio.' };
+        const socioId = querySocio.docs[0].id;
+
+        const claseRef = db.collection('clases_padel').doc(claseId);
+        const pagoPropioRef = db.collection('pagos_clases_padel').doc(_idPagoClasePadel(claseId, socioId));
+
+        await db.runTransaction(async (tx) => {
+            const claseSnap = await tx.get(claseRef);
+            if (!claseSnap.exists) return;
+            const clase = claseSnap.data();
+            // Todas las lecturas antes que cualquier escritura.
+            const pagoSnap = await tx.get(pagoPropioRef);
+
+            const inscriptosIds = clase.inscriptosIds || [];
+            const inscriptosNombres = clase.inscriptosNombres || [];
+            const idxInscripto = inscriptosIds.indexOf(socioId);
+
+            if (idxInscripto !== -1) {
+                const nuevosInscriptosIds = [...inscriptosIds];
+                const nuevosInscriptosNombres = [...inscriptosNombres];
+                nuevosInscriptosIds.splice(idxInscripto, 1);
+                nuevosInscriptosNombres.splice(idxInscripto, 1);
+                let nuevaEsperaIds = [...(clase.listaEsperaIds || [])];
+                let nuevaEsperaNombres = [...(clase.listaEsperaNombres || [])];
+                let promovidoId = null;
+                let promovidoNombre = null;
+
+                if (nuevaEsperaIds.length > 0) {
+                    promovidoId = nuevaEsperaIds[0];
+                    promovidoNombre = nuevaEsperaNombres[0];
+                    nuevosInscriptosIds.push(promovidoId);
+                    nuevosInscriptosNombres.push(promovidoNombre);
+                    nuevaEsperaIds = nuevaEsperaIds.slice(1);
+                    nuevaEsperaNombres = nuevaEsperaNombres.slice(1);
+                }
+
+                tx.update(claseRef, {
+                    inscriptosIds: nuevosInscriptosIds,
+                    inscriptosNombres: nuevosInscriptosNombres,
+                    listaEsperaIds: nuevaEsperaIds,
+                    listaEsperaNombres: nuevaEsperaNombres,
+                });
+
+                if (pagoSnap.exists) {
+                    const pago = pagoSnap.data();
+                    const yaPago = pago.cobrado === true || pago.estadoPagoMP === 'Aprobado';
+                    if (!yaPago) tx.delete(pagoPropioRef);
+                }
+
+                if (promovidoId) {
+                    const pagoPromovidoRef = db.collection('pagos_clases_padel').doc(_idPagoClasePadel(claseId, promovidoId));
+                    const ventaRef = db.collection('ventas_pendientes').doc();
+                    tx.set(pagoPromovidoRef, {
+                        claseId,
+                        claseNombre: clase.nombre,
+                        fecha: clase.fecha,
+                        profesorId: clase.profesorId,
+                        socioId: promovidoId,
+                        socioNombre: promovidoNombre,
+                        monto: clase.precioPorAlumno,
+                        cobrado: false,
+                        medioPago: null,
+                        fechaPago: null,
+                        estadoPagoMP: 'Pendiente',
+                        ventaPendienteId: ventaRef.id,
+                    });
+                    tx.set(ventaRef, {
+                        socio_id: promovidoId,
+                        nombre_socio: promovidoNombre,
+                        origen: `Clase de Pádel: ${clase.nombre}`,
+                        fecha_creacion: admin.firestore.FieldValue.serverTimestamp(),
+                        estado: 'Pendiente',
+                        items: [{
+                            id: 'clase_padel_alumno',
+                            nombre: `Clase de Pádel: ${clase.nombre}`,
+                            precio: clase.precioPorAlumno,
+                            cantidad: 1,
+                            es_producto_fisico: false,
+                        }],
+                    });
+                }
+                return;
+            }
+
+            const listaEsperaIds = clase.listaEsperaIds || [];
+            const idxEspera = listaEsperaIds.indexOf(socioId);
+            if (idxEspera !== -1) {
+                const nuevaEsperaIds = [...listaEsperaIds];
+                const nuevaEsperaNombres = [...(clase.listaEsperaNombres || [])];
+                nuevaEsperaIds.splice(idxEspera, 1);
+                nuevaEsperaNombres.splice(idxEspera, 1);
+                tx.update(claseRef, {
+                    listaEsperaIds: nuevaEsperaIds,
+                    listaEsperaNombres: nuevaEsperaNombres,
+                });
+            }
+        });
+
+        return { success: true };
+    } catch (error) {
+        return { success: false, error: error.message };
     }
 });
 

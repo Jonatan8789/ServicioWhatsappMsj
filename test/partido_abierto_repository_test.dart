@@ -1,5 +1,6 @@
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:natatorio_app/features/paddle/partido_abierto_model.dart';
 import 'package:natatorio_app/features/paddle/partido_abierto_repository.dart';
 import 'package:natatorio_app/features/paddle/reserva_cancha_model.dart';
 
@@ -24,14 +25,43 @@ void main() {
     );
   }
 
+  // En los tests, 'ventaSocioId' siempre coincide con el id del jugador (no
+  // hace falta distinguir auth.uid vs. socios/{id} fuera de las reglas
+  // reales de Firestore).
+  Future<PartidoAbiertoModel> crear({
+    String reservaId = 'reserva1',
+    required String organizadorId,
+    required String organizadorNombre,
+  }) {
+    return crearPartidoAbiertoAtomica(
+      firestore: firestore,
+      reserva: reservaBase(id: reservaId),
+      categoria: '6ta',
+      organizadorId: organizadorId,
+      organizadorNombre: organizadorNombre,
+      ventaSocioId: organizadorId,
+    );
+  }
+
+  Future<PartidoAbiertoModel> unirse({
+    required String partidoId,
+    required String jugadorId,
+    required String jugadorNombre,
+  }) {
+    return unirseAPartidoAtomica(
+      firestore: firestore,
+      partidoId: partidoId,
+      jugadorId: jugadorId,
+      jugadorNombre: jugadorNombre,
+      ventaSocioId: jugadorId,
+    );
+  }
+
   group('crearPartidoAbiertoAtomica', () {
     test(
       'reserva la cancha, crea el partido con el organizador y genera su venta pendiente',
       () async {
-        final partido = await crearPartidoAbiertoAtomica(
-          firestore: firestore,
-          reserva: reservaBase(),
-          categoria: '6ta',
+        final partido = await crear(
           organizadorId: 'organizador1',
           organizadorNombre: 'Organizador',
         );
@@ -61,28 +91,14 @@ void main() {
 
   group('unirseAPartidoAtomica', () {
     test('suma jugadores hasta completar el cupo de 4', () async {
-      final partido = await crearPartidoAbiertoAtomica(
-        firestore: firestore,
-        reserva: reservaBase(),
-        categoria: '6ta',
+      final partido = await crear(
         organizadorId: 'j1',
         organizadorNombre: 'Jugador 1',
       );
 
-      await unirseAPartidoAtomica(
-        firestore: firestore,
-        partidoId: partido.id,
-        jugadorId: 'j2',
-        jugadorNombre: 'Jugador 2',
-      );
-      await unirseAPartidoAtomica(
-        firestore: firestore,
-        partidoId: partido.id,
-        jugadorId: 'j3',
-        jugadorNombre: 'Jugador 3',
-      );
-      final completo = await unirseAPartidoAtomica(
-        firestore: firestore,
+      await unirse(partidoId: partido.id, jugadorId: 'j2', jugadorNombre: 'Jugador 2');
+      await unirse(partidoId: partido.id, jugadorId: 'j3', jugadorNombre: 'Jugador 3');
+      final completo = await unirse(
         partidoId: partido.id,
         jugadorId: 'j4',
         jugadorNombre: 'Jugador 4',
@@ -93,67 +109,38 @@ void main() {
     });
 
     test('rechaza al 5to jugador cuando el partido ya está completo', () async {
-      final partido = await crearPartidoAbiertoAtomica(
-        firestore: firestore,
-        reserva: reservaBase(),
-        categoria: '6ta',
+      final partido = await crear(
         organizadorId: 'j1',
         organizadorNombre: 'Jugador 1',
       );
       for (final j in ['j2', 'j3', 'j4']) {
-        await unirseAPartidoAtomica(
-          firestore: firestore,
-          partidoId: partido.id,
-          jugadorId: j,
-          jugadorNombre: j,
-        );
+        await unirse(partidoId: partido.id, jugadorId: j, jugadorNombre: j);
       }
 
       expect(
-        () => unirseAPartidoAtomica(
-          firestore: firestore,
-          partidoId: partido.id,
-          jugadorId: 'j5',
-          jugadorNombre: 'Jugador 5',
-        ),
+        () => unirse(partidoId: partido.id, jugadorId: 'j5', jugadorNombre: 'Jugador 5'),
         throwsA(isA<PartidoCompletoException>()),
       );
     });
 
     test('rechaza anotarse dos veces al mismo partido', () async {
-      final partido = await crearPartidoAbiertoAtomica(
-        firestore: firestore,
-        reserva: reservaBase(),
-        categoria: '6ta',
+      final partido = await crear(
         organizadorId: 'j1',
         organizadorNombre: 'Jugador 1',
       );
 
       expect(
-        () => unirseAPartidoAtomica(
-          firestore: firestore,
-          partidoId: partido.id,
-          jugadorId: 'j1',
-          jugadorNombre: 'Jugador 1',
-        ),
+        () => unirse(partidoId: partido.id, jugadorId: 'j1', jugadorNombre: 'Jugador 1'),
         throwsA(isA<YaAnotadoEnPartidoException>()),
       );
     });
 
     test('cada jugador que se une genera su propia venta pendiente', () async {
-      final partido = await crearPartidoAbiertoAtomica(
-        firestore: firestore,
-        reserva: reservaBase(),
-        categoria: '6ta',
+      final partido = await crear(
         organizadorId: 'j1',
         organizadorNombre: 'Jugador 1',
       );
-      await unirseAPartidoAtomica(
-        firestore: firestore,
-        partidoId: partido.id,
-        jugadorId: 'j2',
-        jugadorNombre: 'Jugador 2',
-      );
+      await unirse(partidoId: partido.id, jugadorId: 'j2', jugadorNombre: 'Jugador 2');
 
       final ventasJ2 = await firestore
           .collection('ventas_pendientes')

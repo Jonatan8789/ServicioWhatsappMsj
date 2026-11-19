@@ -6,6 +6,7 @@ import 'package:fl_chart/fl_chart.dart';
 import '../../shared/csv_utils.dart';
 import '../../shared/csv_download.dart';
 import '../../theme/app_theme.dart';
+import '../paddle/cancha_padel_repository.dart';
 
 class ReportesBiPage extends StatefulWidget {
   const ReportesBiPage({Key? key}) : super(key: key);
@@ -100,17 +101,18 @@ class _ReportesBiPageState extends State<ReportesBiPage> {
     final int horaCierre =
         (ajustesSnap.data()?['hora_cierre'] as num?)?.toInt() ?? 23;
 
-    final canchasSnap = await _firestore
-        .collection('configuracion_paddle')
-        .doc('canchas')
-        .get();
-    final List<dynamic> listaCanchas =
-        (canchasSnap.data()?['lista'] as List?) ?? [];
+    // 🎾 Canchas dinámicas (canchas_padel, Fase 1): antes esto leía el doc
+    // plano legacy (configuracion_paddle/canchas) directo; ahora usa la
+    // misma fuente (con el mismo fallback) que ya usan canchas_page.dart y
+    // el resto de las pantallas de pádel.
+    final List<String> nombresCanchas = await obtenerNombresCanchasActivas(
+      _firestore,
+    );
     // 🚨 Antes caía a 1 cancha en silencio si faltaba la config — eso
     // infla artificialmente el % de ocupación (se divide por 1 en vez de
     // la cantidad real) sin que nada lo indique en la pantalla.
-    final bool configCanchasFaltante = listaCanchas.isEmpty;
-    final int numCanchas = configCanchasFaltante ? 1 : listaCanchas.length;
+    final bool configCanchasFaltante = nombresCanchas.isEmpty;
+    final int numCanchas = configCanchasFaltante ? 1 : nombresCanchas.length;
 
     final reservasSnap = await _firestore
         .collection('reservas_canchas')
@@ -813,9 +815,9 @@ class _ReportesBiPageState extends State<ReportesBiPage> {
               if (configCanchasFaltante) ...[
                 const SizedBox(height: AppSpacing.xs),
                 const Text(
-                  '⚠️ No encontramos la configuración de canchas activas '
-                  '(configuracion_paddle/canchas) — se está calculando como '
-                  'si hubiera 1 sola cancha, los % pueden estar inflados.',
+                  '⚠️ No encontramos ninguna cancha configurada '
+                  '(canchas_padel) — se está calculando como si hubiera 1 '
+                  'sola cancha, los % pueden estar inflados.',
                   style: TextStyle(fontSize: 12, color: AppColors.warning),
                 ),
               ],

@@ -5,6 +5,7 @@ import 'package:natatorio_app/features/admin/proveedores_compras_page.dart';
 import 'package:natatorio_app/features/admin/reportes_bi_page.dart';
 import 'package:natatorio_app/features/buffet/explorador_ventas_page.dart';
 import 'package:natatorio_app/features/inventario/inventario_general_page.dart';
+import 'package:natatorio_app/features/inventario/inventario_general_model.dart';
 import 'package:natatorio_app/features/paddle/canchas_page.dart';
 import 'package:natatorio_app/features/natatorio/andariveles_page.dart';
 import 'package:natatorio_app/features/paddle/admin_partidos_abiertos_page.dart';
@@ -30,6 +31,9 @@ import '../asistencias/nomina_diaria_page.dart';
 import '../asistencias/control_acceso_page.dart';
 import '../mensajeria/mensajeria_page.dart';
 import 'package:natatorio_app/features/paddle/configuracion_paddle_page.dart';
+import 'package:natatorio_app/features/paddle/gestion_clases_padel_page.dart';
+import 'package:natatorio_app/features/paddle/turnos_fijos_padel_page.dart';
+import 'package:natatorio_app/features/paddle/reportes_bi_padel_page.dart';
 import '../buffet/pos_caja_page.dart';
 import '../buffet/monitor_cocina_page.dart';
 import '../buffet/menu_buffet_page.dart';
@@ -1190,6 +1194,15 @@ class _DashboardPageState extends State<DashboardPage> {
                               () => _pantallaActual = const CanchasPage(),
                             ),
                           ),
+                        if (_coincideFiltro('Canchas & Tarifas'))
+                          _buildMenuItem(
+                            Icons.tune_rounded,
+                            'Canchas & Tarifas',
+                            onTap: () => setState(
+                              () => _pantallaActual =
+                                  const ConfiguracionPaddlePage(),
+                            ),
+                          ),
                         if (_coincideFiltro('Explorador Reservas') ||
                             _coincideFiltro('Comprobantes'))
                           _buildMenuItem(
@@ -1215,6 +1228,53 @@ class _DashboardPageState extends State<DashboardPage> {
                             onTap: () => setState(
                               () => _pantallaActual =
                                   const AdminPartidosAbiertosPage(),
+                            ),
+                          ),
+                        if (_coincideFiltro('Clases de Pádel'))
+                          _buildMenuItem(
+                            Icons.school_rounded,
+                            'Clases de Pádel',
+                            onTap: () => setState(
+                              () => _pantallaActual =
+                                  const GestionClasesPadelPage(),
+                            ),
+                          ),
+                        if (_coincideFiltro('Turnos Fijos'))
+                          _buildMenuItem(
+                            Icons.event_repeat_rounded,
+                            'Turnos Fijos',
+                            onTap: () => setState(
+                              () => _pantallaActual =
+                                  const TurnosFijosPadelPage(),
+                            ),
+                          ),
+                        if (_coincideFiltro('Reportes BI Pádel'))
+                          _buildMenuItem(
+                            Icons.bar_chart_rounded,
+                            'Reportes BI Pádel',
+                            onTap: () => setState(
+                              () => _pantallaActual =
+                                  const ReportesBiPadelPage(),
+                            ),
+                          ),
+                        if (_coincideFiltro('Pro-Shop (Stock)'))
+                          _buildMenuItem(
+                            Icons.inventory_2_rounded,
+                            'Pro-Shop (Stock)',
+                            onTap: () => setState(
+                              () => _pantallaActual = const InventarioGeneralPage(
+                                filtroInicial: tipoInventarioProShop,
+                              ),
+                            ),
+                          ),
+                        if (_coincideFiltro('WhatsApp Pádel'))
+                          _buildMenuItem(
+                            Icons.chat_rounded,
+                            'WhatsApp Pádel',
+                            onTap: () => setState(
+                              () => _pantallaActual = const ConfiguracionFiscalPage(
+                                pestanaInicial: 2,
+                              ),
                             ),
                           ),
                         _buildMenuSectionLabel('Buffet & Ventas'),

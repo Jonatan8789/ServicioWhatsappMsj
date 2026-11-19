@@ -13,6 +13,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../paddle/reserva_cancha_screen.dart';
 import '../paddle/partidos_abiertos_page.dart';
+import '../paddle/socio_clases_padel_page.dart';
 import '../natatorio/socio_reserva_andarivel_page.dart';
 import '../gimnasio/socio_clases_gimnasio_page.dart';
 import '../gimnasio/mi_rutina_page.dart';
@@ -45,7 +46,7 @@ class _SocioDashboardPageState extends State<SocioDashboardPage>
   // la pestaña correspondiente (Torneos, Turnos, etc.). Necesita un
   // TabController explícito (antes era un DefaultTabController implícito)
   // para poder llamar animateTo() desde fuera del árbol de widgets.
-  static const int _tabCount = 8;
+  static const int _tabCount = 9;
   late final TabController _tabController;
 
   static const Map<String, int> _rutaATabIndex = {
@@ -55,11 +56,12 @@ class _SocioDashboardPageState extends State<SocioDashboardPage>
     'natatorio': 2,
     'andarivel': 2,
     'clases_gimnasio': 3,
-    'mi_rutina': 4,
-    'torneos': 5,
-    'mi_cuenta': 6,
-    'cuenta_corriente': 6,
-    'mi_carnet': 7,
+    'clases_padel': 4,
+    'mi_rutina': 5,
+    'torneos': 6,
+    'mi_cuenta': 7,
+    'cuenta_corriente': 7,
+    'mi_carnet': 8,
   };
 
   void _irATabPorRuta(String? ruta) {
@@ -947,6 +949,7 @@ class _SocioDashboardPageState extends State<SocioDashboardPage>
             Tab(icon: Icon(Icons.groups_rounded), text: 'Partido Abierto'),
             Tab(icon: Icon(Icons.pool_rounded), text: 'Natatorio'),
             Tab(icon: Icon(Icons.fitness_center_rounded), text: 'Clases Gym'),
+            Tab(icon: Icon(Icons.school_rounded), text: 'Clases Pádel'),
             Tab(icon: Icon(Icons.assignment_rounded), text: 'Mi Rutina'),
             Tab(icon: Icon(Icons.emoji_events_rounded), text: 'Torneos'),
             Tab(icon: Icon(Icons.receipt_long_rounded), text: 'Mi Cuenta'),
@@ -961,6 +964,7 @@ class _SocioDashboardPageState extends State<SocioDashboardPage>
           const PartidosAbiertosPage(),
           const SocioReservaAndarivelPage(),
           const SocioClasesGimnasioPage(),
+          const SocioClasesPadelPage(),
           const MiRutinaPage(),
           _buildVistaTorneos(),
           _buildVistaCuentaCorriente(),

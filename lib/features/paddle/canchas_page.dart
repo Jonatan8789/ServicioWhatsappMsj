@@ -1,9 +1,16 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import 'package:cloud_functions/cloud_functions.dart';
+import '../inventario/inventario_general_model.dart';
+import 'cancha_padel_model.dart';
+import 'gestion_clases_padel_page.dart';
+import 'turnos_fijos_padel_page.dart';
+import 'item_pro_shop_venta.dart';
+import 'paddle_ids.dart';
 import 'reserva_cancha_model.dart';
 import 'reserva_cancha_repository.dart';
 import '../../shared/mercado_pago_dialog.dart';
@@ -32,14 +39,8 @@ class _CanchasPageState extends State<CanchasPage> {
     };
   }
 
-  // Elementos Visuales de Equipamiento
-  bool _alquilaPaleta = false;
-  bool _alquilaPelotas = false;
-
   double _precioSocioRef = 4500.0;
   double _precioExternoRef = 6000.0;
-  double _precioPaletaAnexo = 1500.0;
-  double _precioPelotasAnexo = 1000.0;
 
   // Lógica Horaria e Iluminación Nocturna
   int _horaApertura = 8;
@@ -50,6 +51,103 @@ class _CanchasPageState extends State<CanchasPage> {
   int? _horaInicioSeleccionada;
 
   bool _cargandoTarifas = true;
+
+  // 🎾 Canchas dinámicas (canchas_padel): cada cancha puede pisar el precio
+  // base/plus de luz global. Antes la lista de canchas y los precios eran
+  // un único doc plano (configuracion_paddle/canchas +
+  // configuraciones_paddle/ajustes_globales) iguales para todas.
+  List<CanchaPadelModel> _canchasPadel = [];
+  StreamSubscription<QuerySnapshot>? _canchasPadelSub;
+
+  CanchaPadelModel? _canchaPadelDe(String nombre) {
+    for (final c in _canchasPadel) {
+      if (c.nombre == nombre) return c;
+    }
+    return null;
+  }
+
+  List<String> get _nombresCanchasActivas => _canchasPadel.isNotEmpty
+      ? _canchasPadel.map((c) => c.nombre).toList()
+      : const ['Cancha 1 Cristal', 'Cancha 2 Cristal', 'Cancha 3 Muro'];
+
+  double _precioBaseHoraParaCancha(String cancha) {
+    final c = _canchaPadelDe(cancha);
+    final esSocio = _tipoCliente == 'Socio';
+    return esSocio
+        ? (c?.precioBaseHoraSocio ?? _precioSocioRef)
+        : (c?.precioBaseHoraExterno ?? _precioExternoRef);
+  }
+
+  int _horaInicioLuzParaCancha(String cancha) =>
+      _canchaPadelDe(cancha)?.horaInicioLuz ?? _horaInicioCarga;
+
+  double _plusLuzParaCancha(String cancha) =>
+      _canchaPadelDe(cancha)?.precioAdicionalLuz ?? _plusLuzAnexo;
+
+  double _precioHoraParaCancha(String cancha, int hora) {
+    final base = _precioBaseHoraParaCancha(cancha);
+    final horaLuz = _horaInicioLuzParaCancha(cancha);
+    return hora >= horaLuz ? base + _plusLuzParaCancha(cancha) : base;
+  }
+
+  // 🛍️ Pro-Shop real (conectado a inventario_general, tipoInventario
+  // tipoInventarioProShop): antes paleta/pelotas eran un cargo fijo por
+  // hora, sin relación con ningún stock.
+  List<InventarioGeneralModel> _productosProShop = [];
+  bool _cargandoProShop = true;
+  final Map<String, int> _cantidadesProShop = {};
+
+  List<ItemProShopVenta> get _itemsProShopSeleccionados {
+    final items = <ItemProShopVenta>[];
+    for (final producto in _productosProShop) {
+      final cantidad = _cantidadesProShop[producto.id] ?? 0;
+      if (cantidad > 0) {
+        items.add(
+          ItemProShopVenta(
+            productoId: producto.id,
+            nombre: producto.nombre,
+            cantidad: cantidad,
+            precioUnitario: producto.precioVenta,
+          ),
+        );
+      }
+    }
+    return items;
+  }
+
+  double get _totalProShopSeleccionado =>
+      _itemsProShopSeleccionados.fold(0.0, (acc, i) => acc + i.subtotal);
+
+  Future<void> _cargarProductosProShop() async {
+    final snap = await _firestore
+        .collection('inventario_general')
+        .where('tipoInventario', isEqualTo: tipoInventarioProShop)
+        .where('disponible', isEqualTo: true)
+        .get();
+    if (!mounted) return;
+    setState(() {
+      _productosProShop = snap.docs
+          .map(InventarioGeneralModel.fromFirestore)
+          .toList();
+      _cargandoProShop = false;
+    });
+  }
+
+  void _escucharCanchasPadel() {
+    _canchasPadelSub = _firestore
+        .collection('canchas_padel')
+        .orderBy('ordenVisualizacion')
+        .snapshots()
+        .listen((snap) {
+          if (!mounted) return;
+          setState(() {
+            _canchasPadel = snap.docs
+                .map((d) => CanchaPadelModel.fromFirestore(d.id, d.data()))
+                .where((c) => c.activa)
+                .toList();
+          });
+        });
+  }
 
   final _clienteController = TextEditingController();
   DateTime _fechaSeleccionada = DateTime.now();
@@ -85,11 +183,14 @@ class _CanchasPageState extends State<CanchasPage> {
     super.initState();
     _cargarTarifarioGlobal();
     _cargarSocios();
+    _cargarProductosProShop();
+    _escucharCanchasPadel();
   }
 
   @override
   void dispose() {
     _clienteController.dispose();
+    _canchasPadelSub?.cancel();
     super.dispose();
   }
 
@@ -108,10 +209,6 @@ class _CanchasPageState extends State<CanchasPage> {
               (data['precio_base_cancha'] as num?)?.toDouble() ?? 4500.0;
           _precioExternoRef =
               (data['precio_base_externo'] as num?)?.toDouble() ?? 6000.0;
-          _precioPaletaAnexo =
-              (data['precio_alquiler_paleta'] as num?)?.toDouble() ?? 1500.0;
-          _precioPelotasAnexo =
-              (data['precio_alquiler_pelotas'] as num?)?.toDouble() ?? 1000.0;
           _horaInicioCarga = (data['hora_inicio_luz'] as num?)?.toInt() ?? 20;
           _plusLuzAnexo =
               (data['precio_adicional_luz'] as num?)?.toDouble() ?? 1500.0;
@@ -121,18 +218,14 @@ class _CanchasPageState extends State<CanchasPage> {
         });
       }
     } catch (e) {
-      print("Error cargando configuración comercial: $e");
+      debugPrint("Error cargando configuración comercial: $e");
     } finally {
       setState(() => _cargandoTarifas = false);
     }
   }
 
-  double get precioBaseActual {
-    return _tipoCliente == 'Socio' ? _precioSocioRef : _precioExternoRef;
-  }
-
   double get totalReservaEnTiempoReal {
-    if (_horaInicioSeleccionada == null) return 0.0;
+    if (_horaInicioSeleccionada == null || _canchaSel == null) return 0.0;
 
     double total = 0.0;
     for (
@@ -140,14 +233,9 @@ class _CanchasPageState extends State<CanchasPage> {
       h < _horaInicioSeleccionada! + _duracionSeleccionada;
       h++
     ) {
-      total += precioBaseActual;
-      if (h >= _horaInicioCarga) {
-        total += _plusLuzAnexo;
-      }
-      if (_alquilaPaleta) total += _precioPaletaAnexo;
-      if (_alquilaPelotas) total += _precioPelotasAnexo;
+      total += _precioHoraParaCancha(_canchaSel!, h);
     }
-    return total;
+    return total + _totalProShopSeleccionado;
   }
 
   Future<void> _crearVentaPendienteParaCaja({
@@ -330,65 +418,6 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
     }
   }
 
-  Future<void> _mostrarTurnosFijosActivos() async {
-    final snap = await _firestore
-        .collection('turnos_recurrentes_canchas')
-        .where('activo', isEqualTo: true)
-        .get();
-    if (!mounted) return;
-
-    await showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (context, setModalState) {
-          final docs = [...snap.docs];
-          return AlertDialog(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            title: const Text('Turnos fijos activos'),
-            content: SizedBox(
-              width: 380,
-              child: docs.isEmpty
-                  ? const Text('No hay turnos fijos activos.')
-                  : Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: docs.map((doc) {
-                        final d = doc.data();
-                        final String dia = _nombresDias[((d['diaSemana'] as num?)?.toInt() ?? 1) - 1];
-                        return ListTile(
-                          contentPadding: EdgeInsets.zero,
-                          title: Text(d['nombreCliente']?.toString() ?? '-'),
-                          subtitle: Text('$dia ${d['horaInicio']}:00hs - ${d['cancha']}'),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.delete_outline, color: Colors.red),
-                            tooltip: 'Cancelar turno fijo',
-                            onPressed: () async {
-                              try {
-                                await FirebaseFunctions.instance
-                                    .httpsCallable('cancelarTurnoRecurrenteCancha')
-                                    .call({'turnoId': doc.id});
-                                docs.remove(doc);
-                                setModalState(() {});
-                              } catch (e) {
-                                if (context.mounted) _snack('Error: $e', Colors.red);
-                              }
-                            },
-                          ),
-                        );
-                      }).toList(),
-                    ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cerrar'),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-
   Future<void> _registrarReserva() async {
     if (!_formKey.currentState!.validate() ||
         _canchaSel == null ||
@@ -413,11 +442,12 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
       return;
     }
 
-    final fechaIdStr =
-        "${_fechaSeleccionada.year}-${_fechaSeleccionada.month}-${_fechaSeleccionada.day}";
-
-    final reservaId =
-        "${fechaIdStr}_${_canchaSel!.replaceAll(' ', '')}_${_horaInicioSeleccionada}hs_duracion${_duracionSeleccionada}h";
+    final reservaId = idReservaCancha(
+      fecha: _fechaSeleccionada,
+      cancha: _canchaSel!,
+      horaInicio: _horaInicioSeleccionada!,
+      duracionHoras: _duracionSeleccionada,
+    );
 
     final String nombreFinal = _tipoCliente == 'Socio'
         ? ('${_socioElegido?['nombre'] ?? ''} ${_socioElegido?['apellido'] ?? ''}'
@@ -425,20 +455,15 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
         : _clienteController.text.trim();
 
     double costoCanchaTotal = 0.0;
-    double costoExtrasTotal = 0.0;
-
     for (
       int h = _horaInicioSeleccionada!;
       h < _horaInicioSeleccionada! + _duracionSeleccionada;
       h++
     ) {
-      costoCanchaTotal += precioBaseActual;
-      if (h >= _horaInicioCarga) {
-        costoCanchaTotal += _plusLuzAnexo;
-      }
-      if (_alquilaPaleta) costoExtrasTotal += _precioPaletaAnexo;
-      if (_alquilaPelotas) costoExtrasTotal += _precioPelotasAnexo;
+      costoCanchaTotal += _precioHoraParaCancha(_canchaSel!, h);
     }
+    final double costoExtrasTotal = _totalProShopSeleccionado;
+    final List<ItemProShopVenta> itemsProShop = _itemsProShopSeleccionados;
 
     final double precioFinalCalculado = costoCanchaTotal + costoExtrasTotal;
 
@@ -452,6 +477,7 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
       duracionHoras: _duracionSeleccionada,
       precio: precioFinalCalculado,
       metodoPago: _metodoPagoSel,
+      itemsProShop: itemsProShop,
     );
 
     try {
@@ -459,7 +485,8 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
       // escribía la reserva con un `set()` aparte: dos reservas confirmadas
       // casi al mismo tiempo podían pasar las dos ese chequeo (TOCTOU) y
       // terminar pisándose o duplicando el horario. Ahora todo el chequeo +
-      // escritura es atómico (ver reserva_cancha_repository.dart).
+      // escritura (incluyendo el descuento de stock del Pro-Shop) es
+      // atómico (ver reserva_cancha_repository.dart).
       try {
         await reservarCanchaAtomica(
           firestore: _firestore,
@@ -470,6 +497,9 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
           'Solapamiento detectado. El bloque ya se encuentra reservado.',
           Colors.red,
         );
+        return;
+      } on StockInsuficienteException catch (e) {
+        _snack('$e', Colors.red);
         return;
       }
 
@@ -503,25 +533,23 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
       }
 
       if (_tipoCliente == 'Socio' && _socioIdSeleccionado != null) {
-        List<Map<String, dynamic>> extras = [];
-        if (_alquilaPaleta) {
-          extras.add({
-            'id': 'prod_alquiler_paleta',
-            'nombre': 'Alquiler Paleta (x$_duracionSeleccionada hrs)',
-            'precio': _precioPaletaAnexo * _duracionSeleccionada,
-            'cantidad': 1,
-            'es_producto_fisico': false,
-          });
-        }
-        if (_alquilaPelotas) {
-          extras.add({
-            'id': 'prod_tubo_pelotas',
-            'nombre': 'Alquiler Tubo de Pelotas (x$_duracionSeleccionada hrs)',
-            'precio': _precioPelotasAnexo * _duracionSeleccionada,
-            'cantidad': 1,
-            'es_producto_fisico': false,
-          });
-        }
+        // 🚨 'es_producto_fisico': false a propósito, aunque ahora sea una
+        // venta real de Pro-Shop: el stock ya se descontó atómicamente al
+        // crear la reserva (reservarCanchaAtomica). Si acá fuera 'true', el
+        // POS volvería a descontar el mismo stock una segunda vez cuando
+        // caja cobre esta venta pendiente (ver pos_caja_page.dart, bloque
+        // "DESCUENTO DE STOCK DINÁMICO").
+        final List<Map<String, dynamic>> extras = itemsProShop
+            .map(
+              (item) => {
+                'id': item.productoId,
+                'nombre': '${item.nombre} (x${item.cantidad})',
+                'precio': item.subtotal,
+                'cantidad': item.cantidad,
+                'es_producto_fisico': false,
+              },
+            )
+            .toList();
 
         final String stringBloqueParaCaja =
             "${_horaInicioSeleccionada!.toString().padLeft(2, '0')}:00 hs por $_duracionSeleccionada Hora(s)";
@@ -544,15 +572,70 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
     }
   }
 
-  void _mostrarConsolaTurnoOcupado(ReservaCanchaModel reserva) {
+  Future<void> _mostrarConsolaTurnoOcupado(ReservaCanchaModel reserva) async {
+    // 🚨 Esta reserva bloquea la cancha para una CLASE de pádel (ver
+    // clase_padel_repository.dart, que la crea con este mismo
+    // 'metodoPago' a propósito). Si se la dejara cancelar/señar acá como a
+    // cualquier turno suelto, el doc de la clase (con sus alumnos y pagos
+    // ya generados) quedaría huérfano, apuntando a una reserva borrada.
+    if (reserva.metodoPago == 'Clase de Pádel') {
+      if (!mounted) return;
+      await showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Ocupado por una clase de pádel'),
+          content: Text(
+            '${reserva.nombreCliente}\n\n'
+            'Este horario está reservado por una clase. Gestioná sus '
+            'alumnos, pagos o la cancelación desde "Clases de Pádel".',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cerrar'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const GestionClasesPadelPage(),
+                  ),
+                );
+              },
+              child: const Text('Ir a Clases de Pádel'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
     final senaCtrl = TextEditingController();
     String medioSena = 'Efectivo ARS';
 
-    final Map<String, dynamic> rawData = reserva.toFirestore();
-    double senaPrevia = 0.0;
-    if (rawData.containsKey('seña_abonada')) {
-      senaPrevia = (rawData['seña_abonada'] as num).toDouble();
-    }
+    final double senaPrevia = reserva.senaAbonada;
+
+    // 🔧 Antes se buscaba la caja abierta por un nombre de usuario fijo
+    // ('Administrador Central'), que no coincide con el modelo real de caja
+    // por terminal que usa pos_caja_page.dart ('nombreCajaTerminal'), así
+    // que la seña nunca llegaba a ninguna caja real. Ahora se consulta igual
+    // que el POS: cajas con estado=='Abierta', identificadas por terminal.
+    final cajasAbiertasSnap = await _firestore
+        .collection('control_cajas')
+        .where('estado', isEqualTo: 'Abierta')
+        .get();
+    final List<String> terminalesAbiertas = cajasAbiertasSnap.docs
+        .map((d) => (d.data()['nombreCajaTerminal'] as String?) ?? '')
+        .where((n) => n.isNotEmpty)
+        .toSet()
+        .toList();
+    String? terminalSeleccionada = terminalesAbiertas.isNotEmpty
+        ? terminalesAbiertas.first
+        : null;
+
+    if (!mounted) return;
 
     showDialog(
       context: context,
@@ -575,7 +658,7 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
                 Padding(
                   padding: const EdgeInsets.only(top: 4.0),
                   child: Text(
-                    'Seña ya entregada: \$$senaPrevia (${rawData['detalle_seña'] ?? ''})',
+                    'Seña ya entregada: \$$senaPrevia (${reserva.detalleSena})',
                     style: const TextStyle(
                       color: Colors.green,
                       fontWeight: FontWeight.bold,
@@ -626,6 +709,33 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
                   ),
                 ],
               ),
+              if (terminalesAbiertas.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8.0),
+                  child: Text(
+                    '⚠️ No hay ninguna caja abierta: la seña va a quedar registrada en la reserva, pero no se va a sumar a ningún arqueo hasta que se abra una caja.',
+                    style: TextStyle(color: Colors.orange, fontSize: 12),
+                  ),
+                )
+              else if (terminalesAbiertas.length > 1)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8.0),
+                  child: DropdownButtonFormField<String>(
+                    initialValue: terminalSeleccionada,
+                    decoration: const InputDecoration(
+                      labelText: 'Asentar en caja',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                    items: terminalesAbiertas
+                        .map(
+                          (t) => DropdownMenuItem(value: t, child: Text(t)),
+                        )
+                        .toList(),
+                    onChanged: (v) =>
+                        setModalState(() => terminalSeleccionada = v),
+                  ),
+                ),
             ],
           ),
           actions: [
@@ -663,31 +773,38 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
                     .doc(reserva.id)
                     .update({
                       'precio': reserva.precio - montoSena,
-                      'seña_abonada': senaPrevia + montoSena,
-                      'detalle_seña': 'Señado con $medioSena',
+                      'senaAbonada': senaPrevia + montoSena,
+                      'detalleSena': 'Señado con $medioSena',
                     });
 
-                final cajaQuery = await _firestore
-                    .collection('control_cajas')
-                    .where('usuario', isEqualTo: 'Administrador Central')
-                    .where('estado', isEqualTo: 'Abierta')
-                    .limit(1)
-                    .get();
-
-                if (cajaQuery.docs.isNotEmpty) {
-                  String campo = medioSena == 'Efectivo ARS'
-                      ? 'totalEfectivoARS'
-                      : (medioSena == 'Mercado Pago'
-                            ? 'totalMercadoPago'
-                            : 'totalModo');
-                  await _firestore
+                if (terminalSeleccionada != null) {
+                  final cajaQuery = await _firestore
                       .collection('control_cajas')
-                      .doc(cajaQuery.docs.first.id)
-                      .update({campo: FieldValue.increment(montoSena)});
+                      .where(
+                        'nombreCajaTerminal',
+                        isEqualTo: terminalSeleccionada,
+                      )
+                      .where('estado', isEqualTo: 'Abierta')
+                      .limit(1)
+                      .get();
+
+                  if (cajaQuery.docs.isNotEmpty) {
+                    String campo = medioSena == 'Efectivo ARS'
+                        ? 'totalEfectivoARS'
+                        : (medioSena == 'Mercado Pago'
+                              ? 'totalMercadoPago'
+                              : 'totalModo');
+                    await _firestore
+                        .collection('control_cajas')
+                        .doc(cajaQuery.docs.first.id)
+                        .update({campo: FieldValue.increment(montoSena)});
+                  }
                 }
 
                 _snack(
-                  '💰 Seña de \$$montoSena asentada en caja y descontada del total.',
+                  terminalSeleccionada != null
+                      ? '💰 Seña de \$$montoSena asentada en caja "$terminalSeleccionada" y descontada del total.'
+                      : '💰 Seña de \$$montoSena descontada del total (no se sumó a ninguna caja: no hay ninguna abierta).',
                   Colors.green,
                 );
               },
@@ -747,8 +864,7 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
       _socioIdSeleccionado = null;
       _socioElegido = null;
       _busquedaSocio = "";
-      _alquilaPaleta = false;
-      _alquilaPelotas = false;
+      _cantidadesProShop.clear();
       _duracionSeleccionada = 1;
     });
   }
@@ -769,16 +885,16 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
     for (int hora = _horaApertura; hora < _horaCierre; hora++) {
       final String bloqueStr = "${hora.toString().padLeft(2, '0')}:00 hs";
 
-      double precioBloqueFinal = precioBaseActual;
-      if (hora >= _horaInicioCarga) {
-        precioBloqueFinal += _plusLuzAnexo;
-      }
+      final double precioBloqueFinal = _precioHoraParaCancha(
+        canchaNombre,
+        hora,
+      );
 
       bool estaOcupado = false;
       ReservaCanchaModel? reservaActiva;
 
       mapaReservas.forEach((id, r) {
-        final String fId = "${r.fecha.year}-${r.fecha.month}-${r.fecha.day}";
+        final String fId = fechaIdStrCancha(r.fecha);
         if (fId == fechaIdStr && r.cancha == canchaNombre) {
           int inicio = r.horaInicio;
           int fin = inicio + r.duracionHoras;
@@ -794,13 +910,9 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
 
       String rotuloCliente = 'Disponible';
       if (estaOcupado && reservaActiva != null) {
-        final rawMap = reservaActiva!.toFirestore();
-        if (rawMap.containsKey('seña_abonada') &&
-            (rawMap['seña_abonada'] as num) > 0) {
-          rotuloCliente = '${reservaActiva!.nombreCliente} (💰 SEÑADO)';
-        } else {
-          rotuloCliente = reservaActiva!.nombreCliente;
-        }
+        rotuloCliente = reservaActiva!.senaAbonada > 0
+            ? '${reservaActiva!.nombreCliente} (💰 SEÑADO)'
+            : reservaActiva!.nombreCliente;
       } else if (esElSeleccionadoActualmente) {
         rotuloCliente = 'Seleccionado';
       }
@@ -908,8 +1020,7 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
       );
     }
 
-    final fechaIdStr =
-        "${_fechaSeleccionada.year}-${_fechaSeleccionada.month}-${_fechaSeleccionada.day}";
+    final fechaIdStr = fechaIdStrCancha(_fechaSeleccionada);
 
     // 📱 Panel izquierdo: formulario de nueva reserva. Se arma como closure
     // para reutilizar exactamente el mismo contenido en el layout ancho (Row
@@ -1113,29 +1224,71 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
           ),
           const SizedBox(height: 20),
           const Text(
-            'Equipamiento Adicional:',
+            'Pro-Shop (venta real: descuenta stock):',
             style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
           ),
-          CheckboxListTile(
-            title: Text(
-              'Alquiler de Paleta (+\$${_precioPaletaAnexo.toStringAsFixed(0)} /hr)',
-            ),
-            value: _alquilaPaleta,
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            controlAffinity: ListTileControlAffinity.leading,
-            onChanged: (val) => setState(() => _alquilaPaleta = val ?? false),
-          ),
-          CheckboxListTile(
-            title: Text(
-              'Alquiler Tubo de Pelotas (+\$${_precioPelotasAnexo.toStringAsFixed(0)} /hr)',
-            ),
-            value: _alquilaPelotas,
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            controlAffinity: ListTileControlAffinity.leading,
-            onChanged: (val) => setState(() => _alquilaPelotas = val ?? false),
-          ),
+          const SizedBox(height: 8),
+          if (_cargandoProShop)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: LinearProgressIndicator(),
+            )
+          else if (_productosProShop.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 4),
+              child: Text(
+                'No hay productos de Pro-Shop cargados (Inventario → tipo "Pro-Shop").',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+            )
+          else
+            ..._productosProShop.map((producto) {
+              final cantidad = _cantidadesProShop[producto.id] ?? 0;
+              final sinStock = producto.stockActual <= 0;
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '${producto.nombre} (\$${producto.precioVenta.toStringAsFixed(0)} c/u · stock ${producto.stockActual})',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: sinStock ? Colors.grey : Colors.black87,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.remove_circle_outline, size: 20),
+                      visualDensity: VisualDensity.compact,
+                      onPressed: cantidad > 0
+                          ? () => setState(
+                              () => _cantidadesProShop[producto.id] =
+                                  cantidad - 1,
+                            )
+                          : null,
+                    ),
+                    SizedBox(
+                      width: 20,
+                      child: Text(
+                        '$cantidad',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.add_circle_outline, size: 20),
+                      visualDensity: VisualDensity.compact,
+                      onPressed: (!sinStock && cantidad < producto.stockActual)
+                          ? () => setState(
+                              () => _cantidadesProShop[producto.id] =
+                                  cantidad + 1,
+                            )
+                          : null,
+                    ),
+                  ],
+                ),
+              );
+            }),
           const SizedBox(height: 24),
           Container(
             padding: const EdgeInsets.all(16),
@@ -1154,13 +1307,15 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
                       style: TextStyle(color: Colors.grey, fontSize: 13),
                     ),
                     Text(
-                      '\$${(precioBaseActual * _duracionSeleccionada).toStringAsFixed(0)}',
+                      '\$${((_canchaSel != null ? _precioBaseHoraParaCancha(_canchaSel!) : 0.0) * _duracionSeleccionada).toStringAsFixed(0)}',
                       style: const TextStyle(fontWeight: FontWeight.w600),
                     ),
                   ],
                 ),
-                if (_horaInicioSeleccionada != null &&
-                    _horaInicioSeleccionada! >= _horaInicioCarga) ...[
+                if (_canchaSel != null &&
+                    _horaInicioSeleccionada != null &&
+                    _horaInicioSeleccionada! >=
+                        _horaInicioLuzParaCancha(_canchaSel!)) ...[
                   const SizedBox(height: 6),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1170,7 +1325,7 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
                         style: TextStyle(color: Colors.grey, fontSize: 13),
                       ),
                       Text(
-                        '+\$${(_plusLuzAnexo * _duracionSeleccionada).toStringAsFixed(0)}',
+                        '+\$${(_plusLuzParaCancha(_canchaSel!) * _duracionSeleccionada).toStringAsFixed(0)}',
                         style: const TextStyle(
                           color: Colors.orange,
                           fontWeight: FontWeight.w600,
@@ -1179,17 +1334,17 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
                     ],
                   ),
                 ],
-                if (_alquilaPaleta || _alquilaPelotas) ...[
+                if (_itemsProShopSeleccionados.isNotEmpty) ...[
                   const SizedBox(height: 6),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       const Text(
-                        'Equipamiento Adicional:',
+                        'Pro-Shop:',
                         style: TextStyle(color: Colors.grey, fontSize: 13),
                       ),
                       Text(
-                        '+\$${((_alquilaPaleta ? _precioPaletaAnexo : 0) + (_alquilaPelotas ? _precioPelotasAnexo : 0) * _duracionSeleccionada).toStringAsFixed(0)}',
+                        '+\$${_totalProShopSeleccionado.toStringAsFixed(0)}',
                         style: const TextStyle(
                           color: Colors.blue,
                           fontWeight: FontWeight.w600,
@@ -1289,9 +1444,12 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
             onPressed: _anularReservasHistoricasViejas,
           ),
           IconButton(
-            tooltip: 'Turnos fijos (abonos)',
+            tooltip: 'Turnos fijos y clases recurrentes',
             icon: const Icon(Icons.event_repeat_rounded, color: Colors.indigo),
-            onPressed: _mostrarTurnosFijosActivos,
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const TurnosFijosPadelPage()),
+            ),
           ),
           const SizedBox(width: 8),
           TextButton.icon(
@@ -1337,25 +1495,14 @@ Hola *$nombreSocio*, confirmamos tu turno de pádel:
               ),
             SizedBox(height: movil ? 16 : 24),
             Expanded(
-              child: StreamBuilder<DocumentSnapshot>(
-                stream: _firestore
-                    .collection('configuracion_paddle')
-                    .doc('canchas')
-                    .snapshots(),
-                builder: (context, configSnapshot) {
-                  List<String> canchasDinamicas = [
-                    "Cancha 1 Cristal",
-                    "Cancha 2 Cristal",
-                    "Cancha 3 Muro",
-                  ];
-
-                  if (configSnapshot.hasData && configSnapshot.data!.exists) {
-                    final configData =
-                        configSnapshot.data!.data() as Map<String, dynamic>?;
-                    if (configData != null && configData['lista'] != null) {
-                      canchasDinamicas = List<String>.from(configData['lista']);
-                    }
-                  }
+              // 🎾 Lista de canchas dinámica: antes era un único doc plano
+              // (configuracion_paddle/canchas) que se escuchaba acá mismo;
+              // ahora viene de la suscripción a canchas_padel que ya vive en
+              // el estado de la página (_escucharCanchasPadel), así que no
+              // hace falta otro StreamBuilder anidado para esto.
+              child: Builder(
+                builder: (context) {
+                  final List<String> canchasDinamicas = _nombresCanchasActivas;
 
                   // 🚨 Antes esto traía TODA la colección 'reservas_canchas'
                   // sin filtro sólo para armar la grilla del día elegido —

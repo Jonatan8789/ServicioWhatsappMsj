@@ -4,7 +4,13 @@ import 'package:cloud_functions/cloud_functions.dart';
 import '../../services/auditoria_service.dart';
 
 class ConfiguracionFiscalPage extends StatefulWidget {
-  const ConfiguracionFiscalPage({Key? key}) : super(key: key);
+  // Permite abrir la pantalla directo en una pestaña puntual (ej. el
+  // "WhatsApp Pádel" del menú de Pádel, que quiere entrar derecho a los
+  // interruptores de notificaciones sin pasar por ARCA/Mercado Pago).
+  final int pestanaInicial;
+
+  const ConfiguracionFiscalPage({Key? key, this.pestanaInicial = 0})
+      : super(key: key);
 
   @override
   State<ConfiguracionFiscalPage> createState() =>
@@ -37,10 +43,23 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
   bool _recordatoriosActivos = false;
   bool _guardandoToggleRecordatorios = false;
 
+  // 🎾 Interruptores de WhatsApp específicos de pádel (Fase 5): clases,
+  // turno fijo, partido abierto y aviso de recibo de pago — todos default
+  // apagados, mismo criterio de seguridad que 'recordatoriosActivos'.
+  bool _notifClasesPadelActivo = false;
+  bool _notifTurnoFijoActivo = false;
+  bool _notifPartidoAbiertoActivo = false;
+  bool _notifPagoConfirmadoActivo = false;
+  bool _guardandoToggleNotifPadel = false;
+
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(
+      length: 3,
+      vsync: this,
+      initialIndex: widget.pestanaInicial,
+    );
     _cargarConfiguracionArca();
     _cargarConfiguracionMP();
     _cargarConfiguracionWhatsapp();
@@ -68,9 +87,13 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
           .doc('whatsapp_reglas')
           .get();
       if (doc.exists) {
-        _telefonoAdminWhatsappCtrl.text =
-            (doc.data()!['telefonoAdmin'] ?? '').toString();
-        _recordatoriosActivos = doc.data()!['recordatoriosActivos'] == true;
+        final datos = doc.data()!;
+        _telefonoAdminWhatsappCtrl.text = (datos['telefonoAdmin'] ?? '').toString();
+        _recordatoriosActivos = datos['recordatoriosActivos'] == true;
+        _notifClasesPadelActivo = datos['notifClasesPadelActivo'] == true;
+        _notifTurnoFijoActivo = datos['notifTurnoFijoActivo'] == true;
+        _notifPartidoAbiertoActivo = datos['notifPartidoAbiertoActivo'] == true;
+        _notifPagoConfirmadoActivo = datos['notifPagoConfirmadoActivo'] == true;
       }
     } catch (e) {
       print("Error cargando WhatsApp: $e");
@@ -98,6 +121,45 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
       }
     } finally {
       if (mounted) setState(() => _guardandoToggleRecordatorios = false);
+    }
+  }
+
+  // 🎾 Mismo criterio que _cambiarToggleRecordatorios: inmediato y con
+  // merge:true, un solo método genérico para los 4 interruptores de pádel
+  // en vez de repetirlo 4 veces.
+  Future<void> _cambiarToggleNotifPadel(String campo, bool valor) async {
+    setState(() => _guardandoToggleNotifPadel = true);
+    try {
+      await _firestore
+          .collection('configuraciones_fiscales')
+          .doc('whatsapp_reglas')
+          .set({campo: valor}, SetOptions(merge: true));
+      if (mounted) {
+        setState(() {
+          switch (campo) {
+            case 'notifClasesPadelActivo':
+              _notifClasesPadelActivo = valor;
+              break;
+            case 'notifTurnoFijoActivo':
+              _notifTurnoFijoActivo = valor;
+              break;
+            case 'notifPartidoAbiertoActivo':
+              _notifPartidoAbiertoActivo = valor;
+              break;
+            case 'notifPagoConfirmadoActivo':
+              _notifPagoConfirmadoActivo = valor;
+              break;
+          }
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('❌ Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _guardandoToggleNotifPadel = false);
     }
   }
 
@@ -417,8 +479,85 @@ class _ConfiguracionFiscalPageState extends State<ConfiguracionFiscalPage>
               ),
               const SizedBox(height: 20),
               _buildCardRecordatorios(),
+              const SizedBox(height: 20),
+              _buildCardNotificacionesPadel(),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  // 🎾 NOTIFICACIONES DE PÁDEL (Fase 5): clase confirmada, turno fijo
+  // confirmado, eventos de partido abierto (alguien se une / se completa) y
+  // aviso de recibo cuando se aprueba un pago por Mercado Pago. Cada uno es
+  // un interruptor independiente, todos apagados por defecto.
+  Widget _buildCardNotificacionesPadel() {
+    Widget switchPadel({
+      required String campo,
+      required bool valor,
+      required String titulo,
+      required String subtitulo,
+    }) {
+      return SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        value: valor,
+        activeColor: Colors.green,
+        onChanged: _guardandoToggleNotifPadel
+            ? null
+            : (v) => _cambiarToggleNotifPadel(campo, v),
+        title: Text(titulo, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+        subtitle: Text(subtitulo, style: const TextStyle(fontSize: 11.5)),
+      );
+    }
+
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Notificaciones de Pádel',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF0F172A),
+              ),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'Avisos automáticos por WhatsApp para eventos del módulo de pádel. Cada uno se prende por separado.',
+              style: TextStyle(color: Colors.grey, fontSize: 12),
+            ),
+            const Divider(height: 24),
+            switchPadel(
+              campo: 'notifClasesPadelActivo',
+              valor: _notifClasesPadelActivo,
+              titulo: 'Inscripción a clase confirmada',
+              subtitulo: 'Avisa al alumno cuando queda anotado en una clase de pádel.',
+            ),
+            switchPadel(
+              campo: 'notifTurnoFijoActivo',
+              valor: _notifTurnoFijoActivo,
+              titulo: 'Turno fijo confirmado',
+              subtitulo: 'Avisa al socio cuando se le asigna un turno fijo de cancha.',
+            ),
+            switchPadel(
+              campo: 'notifPartidoAbiertoActivo',
+              valor: _notifPartidoAbiertoActivo,
+              titulo: 'Partido abierto',
+              subtitulo: 'Avisa cuando alguien se une a un partido abierto y cuando se completa el cupo de 4.',
+            ),
+            switchPadel(
+              campo: 'notifPagoConfirmadoActivo',
+              valor: _notifPagoConfirmadoActivo,
+              titulo: 'Aviso de recibo (pago aprobado)',
+              subtitulo: 'Avisa cuando Mercado Pago aprueba un pago hecho por el propio socio desde la app.',
+            ),
+          ],
         ),
       ),
     );

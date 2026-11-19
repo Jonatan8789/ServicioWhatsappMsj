@@ -42,6 +42,24 @@ class _PartidosAbiertosPageState extends State<PartidosAbiertosPage> {
     }
   }
 
+  String? get _categoriaPadelPropia => _datosSocio?['categoriaPadel']?.toString();
+
+  // 🎾 Categoría de cada jugador (Fase 6) para mostrarla junto al nombre —
+  // 'partidos_abiertos' sólo guarda ids/nombres, no categorías, así que se
+  // resuelve con una lectura puntual a 'socios' (como mucho 4 jugadores por
+  // partido, no es una colección de alto volumen).
+  Future<Map<String, String>> _categoriasDeJugadores(List<String> ids) async {
+    if (ids.isEmpty) return {};
+    final snap = await _firestore
+        .collection('socios')
+        .where(FieldPath.documentId, whereIn: ids)
+        .get();
+    return {
+      for (final doc in snap.docs)
+        doc.id: (doc.data()['categoriaPadel']?.toString() ?? 'Sin categoría'),
+    };
+  }
+
   void _snack(String msg, Color color) {
     if (!mounted) return;
     ScaffoldMessenger.of(
@@ -50,7 +68,8 @@ class _PartidosAbiertosPageState extends State<PartidosAbiertosPage> {
   }
 
   Future<void> _unirme(PartidoAbiertoModel partido) async {
-    if (_socioDocId == null) {
+    final user = FirebaseAuth.instance.currentUser;
+    if (_socioDocId == null || user == null) {
       _snack(
         'No encontramos tu ficha de socio. Contactá a administración.',
         Colors.red,
@@ -68,6 +87,7 @@ class _PartidosAbiertosPageState extends State<PartidosAbiertosPage> {
         partidoId: partido.id,
         jugadorId: _socioDocId!,
         jugadorNombre: nombreSocio,
+        ventaSocioId: user.uid,
       );
       _snack(
         '🎾 ¡Listo! Te anotaste. Tu parte se cobrará en caja.',
@@ -226,9 +246,36 @@ class _PartidosAbiertosPageState extends State<PartidosAbiertosPage> {
                               style: const TextStyle(color: Colors.grey),
                             ),
                             const SizedBox(height: 6),
-                            Text(
-                              'Jugadores: ${p.jugadoresNombres.join(', ')}',
+                            FutureBuilder<Map<String, String>>(
+                              future: _categoriasDeJugadores(p.jugadoresIds),
+                              builder: (context, snapCategorias) {
+                                final categorias = snapCategorias.data ?? {};
+                                final texto = List.generate(
+                                  p.jugadoresIds.length,
+                                  (idx) {
+                                    final cat = categorias[p.jugadoresIds[idx]];
+                                    return cat != null
+                                        ? '${p.jugadoresNombres[idx]} ($cat)'
+                                        : p.jugadoresNombres[idx];
+                                  },
+                                ).join(', ');
+                                return Text('Jugadores: $texto');
+                              },
                             ),
+                            if (!yaAnotado &&
+                                _categoriaPadelPropia != null &&
+                                _categoriaPadelPropia != p.categoria)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text(
+                                  '⚠️ Tu categoría ($_categoriaPadelPropia) no '
+                                  'coincide con la de este partido (${p.categoria}).',
+                                  style: const TextStyle(
+                                    color: Colors.orange,
+                                    fontSize: 11.5,
+                                  ),
+                                ),
+                              ),
                             Text(
                               'Faltan $lugares · Tu parte: \$${p.montoPorJugador.toStringAsFixed(0)}',
                               style: const TextStyle(

@@ -5,7 +5,12 @@ import 'inventario_general_model.dart';
 import 'movimiento_stock_service.dart';
 
 class InventarioGeneralPage extends StatefulWidget {
-  const InventarioGeneralPage({super.key});
+  // Permite abrir la pantalla ya filtrada por un tipo puntual (ej. el
+  // "Pro-Shop (Stock)" del menú de Pádel, que quiere entrar derecho a ver
+  // sólo paletas/pelotas sin que el staff tenga que elegir el filtro a mano).
+  final String? filtroInicial;
+
+  const InventarioGeneralPage({super.key, this.filtroInicial});
 
   @override
   State<InventarioGeneralPage> createState() => _InventarioGeneralPageState();
@@ -14,7 +19,7 @@ class InventarioGeneralPage extends StatefulWidget {
 class _InventarioGeneralPageState extends State<InventarioGeneralPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  String _filtroTipo = 'Todos';
+  late String _filtroTipo = widget.filtroInicial ?? 'Todos';
   String _filtroUbicacion = 'Todas';
   String _searchQuery = '';
 
